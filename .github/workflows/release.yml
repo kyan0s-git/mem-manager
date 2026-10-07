@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build and publish, e.g. v0.1.0"
+        description: "Tag to publish, e.g. v0.1.0. Builds the head of the selected branch; a missing tag is created there."
         required: true
 
 permissions:
@@ -28,6 +28,8 @@ concurrency:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # Tag push: build the tag. Manual run: build the dispatched commit (the release tags it).
+  REF: ${{ github.event.inputs.tag && github.sha || github.ref_name }}
 
 jobs:
   verify:
@@ -39,7 +41,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
+      - name: An existing tag must point at the commit being built
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          tagsha="$(git ls-remote origin "refs/tags/$TAG^{}" "refs/tags/$TAG" | head -1 | cut -f1)"
+          if [ -n "$tagsha" ] && [ "$tagsha" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG already exists at $tagsha, not $GITHUB_SHA"; exit 1
+          fi
       - id: v
         name: Tag must match the crate version
         run: |
@@ -65,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -122,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
       - uses: actions/download-artifact@v4
         with:
           pattern: windows-*
@@ -179,7 +188,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
       - name: Build, test, self-test, benchmark
         working-directory: macos
         run: |
@@ -242,7 +251,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -279,7 +288,9 @@ jobs:
             gh release edit "$TAG" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}"
             gh release upload "$TAG" assets/* --clobber
           else
-            gh release create "$TAG" --verify-tag --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}" assets/*
+            target=()
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then target=(--target "$GITHUB_SHA"); else target=(--verify-tag); fi
+            gh release create "$TAG" "${target[@]}" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}" assets/*
           fi
       - uses: actions/upload-artifact@v4
         with:
