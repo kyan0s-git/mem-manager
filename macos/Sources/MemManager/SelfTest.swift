@@ -32,9 +32,13 @@ enum SelfTest {
             let spec = IconSpec(style: style, fraction: 0.62, text: "62%", state: .high, color: .systemBlue, template: false,
                                 paused: false, history: [0.2, 0.4, 0.3, 0.6], height: 22)
             let img = IconRenderer.image(spec)
-            guard let rep = img.bitmapImageRepForCachingDisplay(in: NSRect(origin: .zero, size: img.size)) else {
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(img.size.width * 2),
+                                             pixelsHigh: Int(img.size.height * 2), bitsPerSample: 8, samplesPerPixel: 4,
+                                             hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                             bytesPerRow: 0, bitsPerPixel: 0) else {
                 failures.append("icon \(style.rawValue): no bitmap"); continue
             }
+            rep.size = img.size
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
             img.draw(in: NSRect(origin: .zero, size: img.size))

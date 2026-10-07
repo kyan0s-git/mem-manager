@@ -21,12 +21,16 @@
   - `requestedExecutionLevel = asInvoker`, so a manual launch never prompts.
   - `dpiAwareness = PerMonitorV2`, `longPathAware`, Common Controls v6.
   - `supportedOS` GUIDs for Windows 10/11.
-- **Elevation.** Task registration goes through `ITaskService` (COM, Task Scheduler 2.0):
-  - Trigger: `TASK_TRIGGER_LOGON` for the current user. Principal: `TASK_RUNLEVEL_HIGHEST`,
-    `TASK_LOGON_INTERACTIVE_TOKEN`.
+- **Elevation.** `memmanager.exe --register-task` (run elevated through `ShellExecuteEx("runas")`)
+  writes a Task Scheduler 1.2 XML definition and registers it with `schtasks /Create /XML`. This
+  needs less code than the `ITaskService` COM API and does the same thing:
+  - Trigger: `LogonTrigger` for the current user. Principal: `RunLevel = HighestAvailable`,
+    `LogonType = InteractiveToken`.
   - Settings: `DisallowStartIfOnBatteries = false`, `ExecutionTimeLimit = PT0S`,
-    `MultipleInstances = IgnoreNew`.
-  - Removal: `--unregister-task`, also run by the uninstaller.
+    `MultipleInstancesPolicy = IgnoreNew`.
+  - With `--launch`, the elevated helper waits for the non-elevated instance to exit (its
+    single-instance mutex disappears), then starts the app elevated.
+  - Removal: `--unregister-task` (`schtasks /Delete`), also run by an uninstaller.
 - **Single instance.** A named mutex `Local\MemManager.{GUID}`. A second launch posts a
   "show popup" message to the first.
 - **Startup privileges.** `AdjustTokenPrivileges` enables `SeProfileSingleProcessPrivilege` and
@@ -53,18 +57,23 @@ windows/
     src/lib.rs               (compiles and is unit-tested on Linux CI against spec/test-vectors)
   app/
     build.rs                 embeds manifest + version resource (+ icon)
-    src/main.rs              entry, single instance, privilege setup, thread spawn
-    src/nt.rs                NtQuerySystemInformation / NtSetSystemInformation FFI (classes 2, 5, 22, 80, 81, 130; minimal structs)
-    src/sample.rs            Sample/ProcSample collection with reused buffers
-    src/actions.rs           tiered actions (§3) + feature probing
-    src/procs.rs             candidate selection: idle, foreground, audio, exclusions
-    src/tray.rs              Shell_NotifyIcon v4, icon rasterizer, theme tracking
-    src/popup.rs             flyout window, Direct2D/DirectWrite rendering, UIA provider
-    src/settings.rs          settings window (same widget set)
-    src/widgets.rs           tiny retained widget set: label, gauge, bar, button, toggle, slider, swatch, list
-    src/task.rs              ITaskService registration
+    src/main.rs              entry: --selftest, --register-task, --unregister-task, or the tray app
+    src/app.rs               UI thread: hidden main window, flyout window, message loop, menus, dialogs
+    src/nt.rs                NtQuerySystemInformation / NtSetSystemInformation FFI (classes 2, 5, 22, 80, 81, 130), RtlGetVersion
+    src/privilege.rs         elevation check, AdjustTokenPrivileges
+    src/sysmem.rs            system sampler → core Sample (lists, commit, faults, pools)
+    src/procs.rs             process table, idle tracking, bounded leak histories, trim candidates
+    src/winactions.rs        tier executors, memory-priority table, audio/foreground/game/idle probes
+    src/worker.rs            engine + worker thread (events, waitable timer, scheduler, ledger, notices)
+    src/shared.rs            Snapshot / Command / Notice exchanged between threads
+    src/pool.rs              kernel pool trend + pool-tag attribution
+    src/tray.rs              Shell_NotifyIcon v4, icon rendering (GDI text mask), theme reading, tooltip
+    src/icon.rs, palette.rs  pure-Rust anti-aliased icon rasterizer and colour tokens (tested on Linux)
+    src/ui/gfx.rs            Direct2D/DirectWrite wrapper (created on show, dropped on hide)
+    src/ui/popup.rs          flyout: dashboard and settings views, hit testing, keyboard focus
+    src/task.rs              logon-task XML + schtasks
     src/config.rs            INI read/write (%APPDATA%\MemManager\config.ini)
-    src/notify.rs            balloon/toast via NIF_INFO (no WinRT dependency)
+    src/selftest.rs          headless live-system self-test with a JSON report (run in CI)
 ```
 
 ## 3. Action tiers (Windows predicates)

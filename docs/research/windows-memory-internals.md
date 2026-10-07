@@ -230,7 +230,7 @@ issue #191, where auto-clean looped while above threshold and was fixed with a c
 
 | Need | Cheapest source | Notes |
 |---|---|---|
-| Lists, standby by priority, repurposes | `NtQuerySystemInformation(SystemMemoryListInformation)` | One call, fixed 96-byte struct [W1] |
+| Lists, standby by priority, repurposes | `NtQuerySystemInformation(SystemMemoryListInformation)` | One call, fixed 176-byte struct on 64-bit [W1] |
 | Commit, pools, fault counters, page reads | `NtQuerySystemInformation(SystemPerformanceInformation)` | `PageReadCount` (hard), `TransitionCount` / `CacheTransitionCount` (soft), `DemandZeroCount`, pool pages [W1] |
 | Totals, page size | `GlobalMemoryStatusEx`, `GetPerformanceInfo` | Documented fallbacks |
 | Per-process memory | `NtQuerySystemInformation(SystemProcessInformation)` | **One call for all processes**: `WorkingSetSize`, `PrivatePageCount`, `PagefileUsage`, `PeakWorkingSetSize`, `HandleCount`, image name, PID. The buffer is reused (grow-only). It costs about 100–300 µs on 300 processes, versus milliseconds for `OpenProcess` plus `GetProcessMemoryInfo` per PID. |

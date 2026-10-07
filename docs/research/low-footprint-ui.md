@@ -147,9 +147,11 @@ The working set is reported too, as a secondary number. See `docs/architecture/r
 
 - **macOS.** A SwiftUI `Form` in an `NSHostingController` inside an `NSWindow` that is **created
   on open and released on close**. Use the `windowWillClose` hook to nil the reference.
-- **Windows.** The same Direct2D widget set as the popup: segmented control, toggle, slider,
-  colour swatch with presets and a custom picker, and a list with an exclusion editor. Everything
-  is released on close.
+- **Windows.** Settings are a second *view inside the flyout*, drawn with the same Direct2D widgets
+  (segmented controls, toggles, colour swatches with the system colour picker, buttons) and
+  scrollable. A single window means one set of device resources, released when the flyout
+  hides. Exclusion and ignore lists are edited as plain text in `config.ini`, which the app
+  reloads when the file changes.
 - **Persistence.**
   - Windows: an INI-style file in `%APPDATA%\MemManager\config.ini`. A hand-written parser of
     about 150 lines avoids serde.
