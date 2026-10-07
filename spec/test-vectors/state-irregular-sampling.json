@@ -1,0 +1,42 @@
+{
+ "name": "irregular-sampling",
+ "samples": [
+  [
+   0,
+   0.2
+  ],
+  [
+   1000,
+   0.9
+  ],
+  [
+   1500,
+   0.9
+  ],
+  [
+   61500,
+   0.9
+  ],
+  [
+   62000,
+   0.2
+  ],
+  [
+   182000,
+   0.2
+  ],
+  [
+   302000,
+   0.0
+  ]
+ ],
+ "expect_states": [
+  "Normal",
+  "Normal",
+  "Normal",
+  "Critical",
+  "Critical",
+  "High",
+  "Elevated"
+ ]
+}

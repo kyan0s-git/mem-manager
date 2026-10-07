@@ -1,0 +1,16 @@
+# Rust
+/windows/target/
+
+# SwiftPM / Xcode
+/macos/.build/
+/macos/build/
+/macos/.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["core", "app"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/kyan0s-git/mem-manager"
+
+# Size-tuned release profile (docs/architecture/windows.md §7).
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+
+[profile.dev]
+panic = "abort"

@@ -1,0 +1,9 @@
+[package]
+name = "memmanager-core"
+description = "Platform-neutral policy engine and leak detector (docs/architecture/policy-engine.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]

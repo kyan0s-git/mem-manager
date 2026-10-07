@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchDaemon registered with SMAppService.daemon(plistName:). See docs/architecture/macos.md §5. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.memmanager.helper</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/MemManagerHelper</string>
+	<key>MachServices</key>
+	<dict>
+		<key>dev.memmanager.helper</key>
+		<true/>
+	</dict>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.memmanager.MemManager</string>
+	</array>
+	<!-- A crash relaunches the helper, whose startup path resets any latched pressure level. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>Crashed</key>
+		<true/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    name: Spec vectors & docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify test vectors against the reference model
+        run: python3 spec/reference/policy_ref.py --check spec/test-vectors
+      - name: Check relative links in Markdown
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress --include-fragments './**/*.md'
+          fail: true
+
+  core:
+    name: Core (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --manifest-path windows/Cargo.toml --all -- --check
+      - name: Test core
+        run: cargo test --manifest-path windows/Cargo.toml -p memmanager-core
+      - name: Clippy core
+        run: cargo clippy --manifest-path windows/Cargo.toml -p memmanager-core -- -D warnings
+
+  windows:
+    name: Windows app (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - name: Build (release)
+        run: cargo build --manifest-path windows/Cargo.toml --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+      - name: Clippy
+        run: cargo clippy --manifest-path windows/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
+      - name: Report binary size
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: (Get-Item windows/target/${{ matrix.target }}/release/memmanager.exe).Length
+
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        working-directory: macos
+        run: swift build -c release
+      - name: Test
+        working-directory: macos
+        run: swift test
