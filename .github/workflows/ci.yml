@@ -88,6 +88,23 @@ jobs:
       - name: Build
         working-directory: macos
         run: swift build -c release
-      - name: Test
+      - name: Test (spec vectors)
         working-directory: macos
         run: swift test
+      - name: Self-test on the live system
+        working-directory: macos
+        run: |
+          ./.build/release/MemManager --selftest=10 --out=selftest.json
+          cat selftest.json
+      - name: Bundle app
+        working-directory: macos
+        run: |
+          ./scripts/bundle.sh release
+          ditto -c -k --keepParent build/MemManager.app build/MemManager.app.zip
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: MemManager-macos
+          path: |
+            macos/build/MemManager.app.zip
+            macos/selftest.json

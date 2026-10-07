@@ -1,13 +1,17 @@
-// MemManager for macOS — entry point.
-//
-// Scaffolding only. Planned components (docs/architecture/macos.md):
-// StatusItemController, PopoverController, Sampler, ProcessMonitor, Actions,
-// HelperClient, SettingsWindow (SwiftUI, created on demand), Notifications.
-// This binary currently builds the toolchain and module graph end to end and
-// exits immediately.
+// MemManager for macOS — a complementary memory manager in the menu bar.
+// See docs/architecture/macos.md.
 
 import AppKit
-import MemCore
 
-_ = MemCore.specVersion
-_ = NSApplication.shared
+let args = CommandLine.arguments.dropFirst()
+if let st = args.first(where: { $0.hasPrefix("--selftest") }) {
+    let secs = st.split(separator: "=").dropFirst().first.flatMap { Int($0) } ?? 10
+    let out = args.first(where: { $0.hasPrefix("--out=") }).map { String($0.dropFirst(6)) }
+    exit(SelfTest.run(seconds: secs, out: out))
+}
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let controller = AppController()
+app.delegate = controller
+app.run()

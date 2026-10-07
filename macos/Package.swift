@@ -13,10 +13,14 @@ let package = Package(
     targets: [
         // Platform-neutral policy engine + leak detector (docs/architecture/policy-engine.md).
         .target(name: "MemCore"),
+        // C shim over libproc, Mach VM statistics and sysctl.
+        .target(name: "MemSys"),
+        // XPC protocol and constants shared by the app and the helper.
+        .target(name: "MemShared"),
         // Unprivileged LSUIElement agent: status item, popover, sampler, actions.
-        .executableTarget(name: "MemManager", dependencies: ["MemCore"]),
+        .executableTarget(name: "MemManager", dependencies: ["MemCore", "MemSys", "MemShared"]),
         // Optional root LaunchDaemon registered via SMAppService (Nudge, Purge).
-        .executableTarget(name: "MemManagerHelper"),
+        .executableTarget(name: "MemManagerHelper", dependencies: ["MemShared", "MemSys"]),
         .testTarget(name: "MemCoreTests", dependencies: ["MemCore"]),
     ]
 )
