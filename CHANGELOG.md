@@ -21,7 +21,7 @@
 - **Installer:** one setup exe for x64 and ARM64. It optionally registers a logon task so
   MemManager starts with cleaning privileges without a UAC prompt each time, and uninstalls
   cleanly.
-- **Footprint:** about 2.5 MB private bytes when idle; about 380 KB executable.
+- **Footprint:** about 2.6–2.9 MB private bytes when idle; about 650 KB executable.
 
 ### macOS (menu bar app, Swift + AppKit)
 - **Event-driven monitoring** of kernel memory pressure, with Activity-Monitor-consistent

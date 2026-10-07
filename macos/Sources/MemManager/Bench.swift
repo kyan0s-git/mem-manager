@@ -34,7 +34,10 @@ enum Bench {
     /// Child: allocate and touch `mib` MiB; if cooperative, free it on memory pressure like a well-behaved app.
     static func child(mib: Int, id: Int, cooperative: Bool, parent: String) -> Never {
         let size = mib << 20
-        var buf: UnsafeMutableRawPointer? = malloc(size)
+        // An anonymous mapping, like a large app cache; munmap returns it to the system at once
+        // (a large free() may be kept by the allocator).
+        let m = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+        var buf: UnsafeMutableRawPointer? = m == MAP_FAILED ? nil : m
         if let b = buf {
             var i = 0
             while i < size {
@@ -48,9 +51,8 @@ enum Bench {
             let s = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
             s.setEventHandler {
                 if let b = buf {
-                    free(b)
+                    munmap(b, size)
                     buf = nil
-                    malloc_zone_pressure_relief(nil, 0)
                     FileManager.default.createFile(atPath: base + ".released", contents: nil)
                 }
             }
@@ -145,7 +147,8 @@ enum Bench {
             let rc = mm_pressure_trigger((HelperConstants.triggerAll << 16) | HelperConstants.levelWarn)
             Thread.sleep(forTimeInterval: 3)
             let reset = mm_pressure_trigger((HelperConstants.triggerAll << 16) | HelperConstants.levelNormal)
-            Thread.sleep(forTimeInterval: 1)
+            _ = waitFor(marker(0, "released"), seconds: 5)
+            Thread.sleep(forTimeInterval: 0.5)
             let v1 = vm()
             let coopAfter = coop.map { footprint($0.processIdentifier) } ?? 0
             let released = FileManager.default.fileExists(atPath: marker(0, "released"))

@@ -28,7 +28,7 @@ def render(path: str) -> str:
             continue
         freed = max(0, s.get("freed_bytes", 0))
         out.append(
-            f"| {s['name']} | {s['action']} | {gib(freed)} | {s.get('freed_pct_ram', 0):.1f}% | {s.get('cost', '')} |"
+            f"| {s['name']} | {s['action']} | {gib(freed)} | {max(0.0, s.get('freed_pct_ram', 0)):.1f}% | {s.get('cost', '')} |"
         )
     if d.get("failures"):
         out += ["", "Bench notes: " + "; ".join(d["failures"])]
