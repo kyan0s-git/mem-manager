@@ -1,0 +1,287 @@
+name: Release
+
+# Builds installable packages for Windows (setup exe + portable zip, x64 and
+# ARM64) and macOS (DMG + zip, universal), runs the self-tests and the
+# memory-bloat benchmark, and publishes a GitHub release with the measured
+# numbers. Tags v0.x and tags with a suffix (v1.0.0-rc1) are pre-releases.
+#
+# Optional signing (skipped when the secrets are absent):
+#   Windows: WINDOWS_CERT_PFX (base64), WINDOWS_CERT_PASSWORD
+#   macOS:   MACOS_CERT_P12 (base64), MACOS_CERT_PASSWORD, APPLE_ID,
+#            APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and publish, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    name: Verify version and spec
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - id: v
+        name: Tag must match the crate version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' windows/Cargo.toml | head -1)"
+          if [ "v$version" != "${TAG%%-*}" ]; then
+            echo "::error::tag $TAG does not match windows/Cargo.toml version $version"; exit 1
+          fi
+          pre=false
+          case "$TAG" in v0.*|*-*) pre=true ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - run: python3 spec/reference/policy_ref.py --check spec/test-vectors
+
+  windows:
+    name: Windows (${{ matrix.target }})
+    needs: verify
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build (release)
+        run: cargo build --manifest-path windows/Cargo.toml --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+      - name: Tests, self-test and benchmark
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          cargo test --manifest-path windows/Cargo.toml --target ${{ matrix.target }}
+          $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest=15','--out=selftest-windows.json' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content selftest-windows.json; throw "selftest failed" }
+          $b = Start-Process -FilePath $exe -ArgumentList '--bench','--out=bench-windows.json' -Wait -PassThru
+          Get-Content bench-windows.json
+          if ($b.ExitCode -ne 0) { Write-Warning "bench reported failures (numbers still published)" }
+      - name: Sign executable (optional)
+        if: env.HAS_CERT == 'true'
+        env:
+          HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Select-Object -Last 1
+          & $signtool sign /f cert.pfx /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "windows/target/${{ matrix.target }}/release/memmanager.exe"
+          Remove-Item cert.pfx
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $arch = if ("${{ matrix.target }}".StartsWith("aarch64")) { "arm64" } else { "x64" }
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item "windows/target/${{ matrix.target }}/release/memmanager.exe" pkg/
+          "MemManager $env:VERSION for Windows ($arch)`r`nRun memmanager.exe. Prefer the setup installer for automatic startup with cleaning privileges.`r`nhttps://github.com/${{ github.repository }}" | Set-Content pkg/README.txt
+          Compress-Archive -Path pkg/* -DestinationPath "MemManager-$env:VERSION-windows-$arch-portable.zip"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Move-Item "MemManager-*.zip" out/
+          Copy-Item "windows/target/${{ matrix.target }}/release/memmanager.exe" "out/memmanager-$arch.exe"
+          Get-ChildItem *.json -ErrorAction SilentlyContinue | Copy-Item -Destination out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.target }}
+          path: out/*
+
+  windows-installer:
+    name: Windows installer
+    needs: [verify, windows]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: bin
+          merge-multiple: true
+      - name: Build setup exe
+        shell: pwsh
+        run: |
+          $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress; $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6" }
+          iscc /Q "/DAppVersion=$env:VERSION" "/DX64Exe=$PWD\bin\memmanager-x64.exe" "/DArm64Exe=$PWD\bin\memmanager-arm64.exe" "/DOutputDir=$PWD\out" windows\installer\MemManager.iss
+      - name: Sign installer (optional)
+        if: env.HAS_CERT == 'true'
+        env:
+          HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Select-Object -Last 1
+          & $signtool sign /f cert.pfx /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 (Get-ChildItem out\*.exe).FullName
+          Remove-Item cert.pfx
+      - name: Smoke-test silent install and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem out\*.exe).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=logontask' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "install failed: $($p.ExitCode)" }
+          $exe = "${env:ProgramFiles}\MemManager\memmanager.exe"
+          if (-not (Test-Path $exe)) { throw "memmanager.exe not installed" }
+          schtasks /Query /TN MemManager | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "logon task not registered" }
+          Start-Sleep -Seconds 3
+          Stop-Process -Name memmanager -Force -ErrorAction SilentlyContinue
+          $u = Start-Process "${env:ProgramFiles}\MemManager\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstall failed: $($u.ExitCode)" }
+          Start-Sleep -Seconds 2
+          schtasks /Query /TN MemManager 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "logon task left behind after uninstall" }
+          if (Test-Path $exe) { throw "files left behind after uninstall" }
+          "install/uninstall OK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: out/*.exe
+
+  macos:
+    name: macOS (universal)
+    needs: verify
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build, test, self-test, benchmark
+        working-directory: macos
+        run: |
+          swift build -c release
+          swift test
+          ./.build/release/MemManager --selftest=10 --out=../selftest-macos.json
+          sudo ./.build/release/MemManager --bench --out=../bench-macos.json || echo "::warning::bench reported failures"
+          sudo chown "$(id -u)" ../bench-macos.json || true
+          cat ../bench-macos.json || true
+      - name: Import signing certificate (optional)
+        if: env.HAS_CERT == 'true'
+        env:
+          HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p temp "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p temp "$kc"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$kc" login.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k temp "$kc"
+          id="$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
+          echo "SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
+      - name: Bundle app and disk image
+        working-directory: macos
+        run: |
+          ./scripts/bundle.sh release
+          mkdir -p ../out
+          ./scripts/make_dmg.sh "../out/MemManager-$VERSION-macos-universal.dmg"
+          ditto -c -k --keepParent build/MemManager.app "../out/MemManager-$VERSION-macos-universal.zip"
+      - name: Notarize (optional)
+        if: env.SIGN_IDENTITY != '' && env.HAS_NOTARY == 'true'
+        env:
+          HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          dmg="out/MemManager-$VERSION-macos-universal.dmg"
+          codesign --force --timestamp -s "$SIGN_IDENTITY" "$dmg"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+      - name: Collect
+        run: cp selftest-macos.json bench-macos.json out/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+
+  publish:
+    name: Publish release
+    needs: [verify, windows, windows-installer, macos]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Assemble assets and notes
+        run: |
+          mkdir -p assets
+          cp artifacts/MemManager-*-windows-setup.exe artifacts/MemManager-*-portable.zip artifacts/MemManager-*-macos-universal.* assets/
+          (cd assets && for f in *; do sha256sum "$f" > "$f.sha256"; done)
+          {
+            awk -v v="## v$VERSION" '$0==v{f=1;next} /^## v/{f=0} f' CHANGELOG.md
+            echo
+            echo "## Install"
+            echo
+            echo "- **Windows 10/11 (x64 or ARM64):** run \`MemManager-$VERSION-windows-setup.exe\`. Keep \"Start at login with memory-cleaning privileges\" checked so MemManager can manage memory without asking for admin each time. Uninstall from *Settings → Apps*."
+            echo "- **macOS 13+:** open \`MemManager-$VERSION-macos-universal.dmg\` and drag MemManager to Applications. On first launch, right-click → Open (the build is not notarized yet)."
+            echo "- Portable Windows zips and a macOS zip are attached as well."
+            echo
+            python3 scripts/bench_report.py artifacts/bench-windows.json artifacts/bench-macos.json
+            echo
+            echo "## Checksums (SHA-256)"
+            echo
+            echo '```'
+            cat assets/*.sha256
+            echo '```'
+          } > notes.md
+          ls -la assets
+          cat notes.md
+      - name: Create or update the GitHub release
+        run: |
+          flags=()
+          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then flags+=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}"
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" --verify-tag --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}" assets/*
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md

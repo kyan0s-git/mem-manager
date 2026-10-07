@@ -49,33 +49,53 @@ Two native memory managers, one per OS, built on the same measured policy engine
 
 ## Install and run
 
-Builds come from CI. Open the latest run on the branch under **Actions**, then download:
+Download from the **[Releases](https://github.com/kyan0s-git/mem-manager/releases)** page. Each
+asset has a `.sha256` file next to it.
 
-- `memmanager-x86_64-pc-windows-msvc` or `memmanager-aarch64-pc-windows-msvc`: `memmanager.exe`
-- `MemManager-macos`: `MemManager.app.zip`
+| OS | Recommended | Alternative |
+|---|---|---|
+| Windows 10/11 (x64 and ARM64) | `MemManager-<ver>-windows-setup.exe`: an installer for both architectures | `MemManager-<ver>-windows-<arch>-portable.zip` |
+| macOS 13 or later (universal) | `MemManager-<ver>-macos-universal.dmg` | `MemManager-<ver>-macos-universal.zip` |
 
-### Windows 10/11
-1. Put `memmanager.exe` somewhere permanent, e.g. `%LOCALAPPDATA%\Programs\MemManager\`, and run
-   it. It starts in **monitor-only** mode with no UAC prompt.
-2. Click the tray icon, then **Enable cleaning →**, and accept the single UAC prompt. This
+Measured results are in [docs/benchmarks.md](docs/benchmarks.md).
+
+### Windows
+1. Run `MemManager-<ver>-windows-setup.exe` and accept the UAC prompt. It installs to
+   `C:\Program Files\MemManager`, adds a Start-menu entry and an **Apps & features** uninstall
+   entry.
+2. Leave **"Start at login with memory-cleaning privileges"** checked (the default). Setup
    registers a logon task with the highest privileges, so MemManager starts elevated at every
-   login without prompting again. It relaunches immediately.
-3. To remove it: **Settings → System → Remove**, then delete the exe.
+   login with no further prompts. It starts as soon as setup finishes.
+   - If you uncheck it, MemManager runs in **monitor-only** mode. You can enable cleaning later
+     from the tray popup (**Enable cleaning →**, one UAC prompt).
+3. **Upgrade:** run a newer setup; it closes the running copy and replaces it in place.
+4. **Uninstall:** **Settings → Apps → MemManager → Uninstall**. This removes the logon task, the
+   files, and, if you agree, your settings in `%APPDATA%\MemManager`.
+
+*Portable zip:* put `memmanager.exe` somewhere permanent and run it. It starts in monitor-only
+mode. **Enable cleaning →** registers the logon task. To remove it: **Settings → System →
+Remove**, then delete the exe.
 
 Settings live in `%APPDATA%\MemManager\config.ini`. Exclusions, the heavy-app list and the
 leak-ignore list can be edited there (**Settings → Exclusions & lists → Edit…**).
 
-> Release builds should be Authenticode-signed. Unsigned binaries may trigger SmartScreen, and the
-> tray icon uses a numeric ID instead of a GUID.
+> Builds are not Authenticode-signed yet, so SmartScreen may warn you (**More info → Run
+> anyway**). Unsigned builds use a numeric tray-icon ID instead of a GUID.
 
-### macOS 13 or later
-1. Unzip and move `MemManager.app` to `/Applications`, then open it. CI builds are ad-hoc
-   signed, so right-click → **Open** the first time.
-2. Click the menu bar icon for the dashboard. **Settings** (gear) controls the icon style,
+### macOS
+1. Open the DMG and drag **MemManager** onto **Applications**.
+2. Open it from Applications. The builds are ad-hoc signed, so macOS blocks the first launch:
+   right-click → **Open**, or allow it in **System Settings → Privacy & Security**.
+3. Click the menu bar icon for the dashboard. **Settings** (gear) controls the icon style,
    colours, profile, notifications and login item.
-3. **Optional:** **Settings → Install helper…** enables Nudge and Purge. macOS asks for approval
+4. **Optional:** **Settings → Install helper…** enables Nudge and Purge. macOS asks for approval
    in System Settings → Login Items. The helper can only be registered by a
    Developer-ID-signed build.
+5. **Uninstall:** Quit from the menu, remove the helper in Settings if you installed it, then
+   drag MemManager.app to the Trash.
+
+### Development builds
+Every CI run on the branch uploads the same packages (version `0.0.0`) under **Actions**.
 
 ## Documentation
 
@@ -105,7 +125,9 @@ windows/core/         Rust policy engine (platform-neutral, tested on any OS)
 windows/app/          Windows tray app (Win32, NT native API, Direct2D)
 macos/Sources/        MemCore (Swift policy engine), MemSys (C shim), MemShared (XPC protocol),
                       MemManager (menu bar app), MemManagerHelper (privileged daemon)
-.github/workflows/    CI: spec vectors, unit tests, live self-tests on Windows and macOS, artifacts
+.github/workflows/    CI (spec vectors, unit tests, live self-tests, benchmarks, packages) and release
+windows/installer/    Inno Setup script for the Windows installer
+scripts/              benchmark report generator
 ```
 
 ## Building
@@ -126,4 +148,12 @@ cd macos
 swift build -c release && swift test
 .build/release/MemManager --selftest=10                   # headless live-system check
 ./scripts/bundle.sh release                               # → build/MemManager.app (ad-hoc signed)
+./scripts/make_dmg.sh build/MemManager.dmg                 # drag-to-Applications DMG
+sudo .build/release/MemManager --bench --out=bench.json   # measured-reduction benchmark
+```
+
+```bat
+:: Windows benchmark and installer (elevated prompt; Inno Setup 6)
+windows\target\release\memmanager.exe --bench --out=bench.json
+iscc /DAppVersion=0.1.0 /DX64Exe=..\target\release\memmanager.exe windows\installer\MemManager.iss
 ```

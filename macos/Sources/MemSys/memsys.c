@@ -4,6 +4,8 @@
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach/vm_map.h>
+#include <mach/vm_purgable.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
@@ -129,4 +131,38 @@ double mm_abstime_to_ns(void) {
         return 1.0;
     }
     return (double)tb.numer / (double)tb.denom;
+}
+
+uint64_t mm_purgeable_alloc(uint64_t size) {
+    vm_address_t addr = 0;
+    kern_return_t kr = vm_allocate(mach_task_self(), &addr, (vm_size_t)size, VM_FLAGS_ANYWHERE | VM_FLAGS_PURGABLE);
+    if (kr != KERN_SUCCESS) {
+        return 0;
+    }
+    return (uint64_t)addr;
+}
+
+int mm_purgeable_set_volatile(uint64_t addr) {
+    int state = VM_PURGABLE_VOLATILE;
+    kern_return_t kr = vm_purgable_control(mach_task_self(), (vm_address_t)addr, VM_PURGABLE_SET_STATE, &state);
+    return kr == KERN_SUCCESS ? 0 : (int)kr;
+}
+
+int mm_purgeable_state(uint64_t addr) {
+    int state = 0;
+    kern_return_t kr = vm_purgable_control(mach_task_self(), (vm_address_t)addr, VM_PURGABLE_GET_STATE, &state);
+    if (kr != KERN_SUCCESS) {
+        return -1;
+    }
+    switch (state & VM_PURGABLE_STATE_MASK) {
+    case VM_PURGABLE_NONVOLATILE: return 0;
+    case VM_PURGABLE_VOLATILE: return 1;
+    case VM_PURGABLE_EMPTY: return 2;
+    case VM_PURGABLE_DENY: return 3;
+    default: return -1;
+    }
+}
+
+void mm_purgeable_free(uint64_t addr, uint64_t size) {
+    vm_deallocate(mach_task_self(), (vm_address_t)addr, (vm_size_t)size);
 }

@@ -72,4 +72,16 @@ int mm_pressure_trigger(int value);
 /// Mach absolute time → nanoseconds factor (numer/denom).
 double mm_abstime_to_ns(void);
 
+/// Allocates `size` bytes of purgeable memory (VM_FLAGS_PURGABLE); returns the address or 0.
+uint64_t mm_purgeable_alloc(uint64_t size);
+
+/// Marks a purgeable region volatile (the kernel may discard it). Returns 0 on success.
+int mm_purgeable_set_volatile(uint64_t addr);
+
+/// Purgeable state: 0 nonvolatile, 1 volatile, 2 empty (purged), 3 deny, -1 error.
+int mm_purgeable_state(uint64_t addr);
+
+/// Frees a region from mm_purgeable_alloc.
+void mm_purgeable_free(uint64_t addr, uint64_t size);
+
 #endif

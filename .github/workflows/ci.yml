@@ -71,6 +71,27 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList '--selftest=20','--out=selftest.json' -Wait -PassThru
           Get-Content selftest.json
           if ($p.ExitCode -ne 0) { throw "selftest exited with $($p.ExitCode)" }
+      - name: Benchmark (realistic bloat)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--bench','--out=bench-windows.json' -Wait -PassThru
+          Get-Content bench-windows.json
+          python scripts/bench_report.py bench-windows.json
+          if ($p.ExitCode -ne 0) { throw "bench exited with $($p.ExitCode)" }
+      - name: Build installer
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          iscc /Q /DAppVersion=0.0.0 "/DX64Exe=$PWD\windows\target\${{ matrix.target }}\release\memmanager.exe" "/DOutputDir=$PWD\dist" windows\installer\MemManager.iss
+          Get-ChildItem dist
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
@@ -78,6 +99,8 @@ jobs:
           path: |
             windows/target/${{ matrix.target }}/release/memmanager.exe
             selftest.json
+            bench-windows.json
+            dist/*.exe
           if-no-files-found: ignore
 
   macos:
@@ -96,15 +119,27 @@ jobs:
         run: |
           ./.build/release/MemManager --selftest=10 --out=selftest.json
           cat selftest.json
-      - name: Bundle app
+      - name: Benchmark (realistic bloat, as root)
+        working-directory: macos
+        continue-on-error: true
+        run: |
+          sudo ./.build/release/MemManager --bench --out=bench-macos.json
+          sudo chown "$(id -u)" bench-macos.json
+          cat bench-macos.json
+          python3 ../scripts/bench_report.py bench-macos.json
+      - name: Bundle app and disk image
         working-directory: macos
         run: |
-          ./scripts/bundle.sh release
+          VERSION=0.0.0 ./scripts/bundle.sh release
           ditto -c -k --keepParent build/MemManager.app build/MemManager.app.zip
+          ./scripts/make_dmg.sh build/MemManager.dmg
       - name: Upload app
         uses: actions/upload-artifact@v4
         with:
           name: MemManager-macos
           path: |
             macos/build/MemManager.app.zip
+            macos/build/MemManager.dmg
             macos/selftest.json
+            macos/bench-macos.json
+          if-no-files-found: ignore

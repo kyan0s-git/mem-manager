@@ -10,6 +10,8 @@ mod palette;
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod bench;
+#[cfg(windows)]
 mod nt;
 #[cfg(windows)]
 mod pool;
@@ -49,6 +51,24 @@ fn main() {
             .iter()
             .find_map(|a| a.strip_prefix("--out=").map(str::to_string));
         std::process::exit(selftest::run(secs, out));
+    }
+    if let Some(mib) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--bench-child="))
+        .and_then(|v| v.parse().ok())
+    {
+        let id = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--bench-id="))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        std::process::exit(bench::child(mib, id));
+    }
+    if args.iter().any(|a| a == "--bench") {
+        let out = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--out=").map(str::to_string));
+        std::process::exit(bench::run(out));
     }
     if has("--register-task") {
         std::process::exit(app::register_task(has("--launch")));
