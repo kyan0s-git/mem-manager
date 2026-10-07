@@ -6,7 +6,7 @@ Two native memory managers, one per OS, built on the same measured policy engine
 |---|---|---|
 | Philosophy | **Rigorous and assertive.** NT exposes powerful levers and apps rarely cooperate, so MemManager shapes the page lists ahead of demand. | **Complementary.** XNU's VM already cooperates (pressure levels, purgeable memory, compressor), so MemManager adds visibility, leak detection and gentle nudges. |
 | Stack | Rust, raw Win32, Direct2D/DirectWrite. A single elevated process started by a logon task. | Swift, AppKit, and SwiftUI for Settings only. An unprivileged app plus an optional root helper. |
-| Own footprint | About 2.5 MB private bytes, measured in CI (budget ≤ 4 MB). The exe is about 380 KB. | Measured in CI (budget ≤ 15 MB footprint). |
+| Own footprint | About 2.5 MB private bytes, measured in CI (budget ≤ 4 MB). The exe is about 380 KB. | About 5.8 MB phys_footprint in the headless engine, measured in CI (budget ≤ 15 MB). |
 | Status UI | Dynamic tray icon (ring, bar or number) and a Fluent flyout with optional acrylic | Dynamic menu bar item (ring, bar, percent, graph or dot) and a popover |
 
 **How it differs from "RAM cleaners":**
