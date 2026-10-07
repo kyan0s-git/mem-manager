@@ -147,7 +147,7 @@ pub fn run(seconds: u64, out: Option<String>) -> i32 {
         .collect();
     let report = format!(
         "{{\"elevated\":{},\"privileges\":{{\"profile\":{},\"quota\":{}}},\"caps\":{{\"lists\":{},\"mem_commands\":{},\"file_cache\":{},\"combine\":{}}},\
-\"total\":{},\"processes\":{},\"compressed_store\":{},\"pool_tags\":{},\"top\":[{}],\"purge\":{},\
+\"total\":{},\"kernel_paged\":{},\"kernel_nonpaged\":{},\"processes\":{},\"compressed_store\":{},\"pool_tags\":{},\"top\":[{}],\"purge\":{},\
 \"self\":{{\"private\":{},\"working_set\":{}}},\"samples\":[{}],\"failures\":[{}]}}",
         privileges.elevated,
         privileges.profile,
@@ -157,6 +157,8 @@ pub fn run(seconds: u64, out: Option<String>) -> i32 {
         caps.file_cache,
         caps.combine,
         r.total,
+        r.kernel_paged,
+        r.kernel_nonpaged,
         eng.procs.map.len(),
         eng.procs.compressed_store(),
         pool,

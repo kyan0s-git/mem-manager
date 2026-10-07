@@ -51,11 +51,9 @@ pub struct Caps {
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
-    pub seq: u64,
     pub t_ms: u64,
     pub reading: SysReading,
     pub compressed: u64,
-    pub p: f64,
     pub s: f64,
     pub state: PressureState,
     /// Used fraction, one point per ~5 s, oldest first (≤ 120 points).

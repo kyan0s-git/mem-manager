@@ -199,7 +199,6 @@ pub struct ProcEntry<'a> {
     pub working_set: u64,
     /// Private bytes (commit charged to the process).
     pub private_bytes: u64,
-    pub handle_count: u32,
     pub session_id: u32,
     pub name: &'a [u16],
 }
@@ -260,7 +259,6 @@ pub fn for_each_process(buf: &[u64], mut f: impl FnMut(&ProcEntry)) {
             cpu_time: (p.user_time as u64).wrapping_add(p.kernel_time as u64),
             working_set: p.working_set_size as u64,
             private_bytes: p.private_page_count as u64,
-            handle_count: p.handle_count,
             session_id: p.session_id,
             name,
         });
@@ -420,5 +418,37 @@ mod tests {
         assert_eq!(size_of::<PoolTag>(), 40);
         #[cfg(target_pointer_width = "64")]
         assert_eq!(std::mem::offset_of!(RawProcess, private_page_count), 0xC8);
+    }
+}
+
+#[repr(C)]
+struct OsVersionInfo {
+    size: u32,
+    major: u32,
+    minor: u32,
+    build: u32,
+    platform: u32,
+    csd: [u16; 128],
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+}
+
+/// Windows build number (e.g. 22631), via RtlGetVersion (not subject to manifest lies).
+pub fn os_build() -> u32 {
+    let mut v = OsVersionInfo {
+        size: size_of::<OsVersionInfo>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    if ok(unsafe { RtlGetVersion(&mut v) }) {
+        v.build
+    } else {
+        0
     }
 }

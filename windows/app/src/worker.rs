@@ -84,7 +84,6 @@ pub struct Engine {
     pool_note: Option<String>,
     last_commit_warn_ms: Option<u64>,
     task_registered: bool,
-    seq: u64,
     pub next_sys_ms: u64,
     pub next_proc_ms: u64,
 }
@@ -126,7 +125,6 @@ impl Engine {
             pool_note: None,
             last_commit_warn_ms: None,
             task_registered: false,
-            seq: 0,
             next_sys_ms: now,
             next_proc_ms: now,
         };
@@ -602,7 +600,6 @@ impl Engine {
     }
 
     pub fn snapshot(&mut self, now: u64) -> Snapshot {
-        self.seq += 1;
         let (self_private, self_ws) = self_memory();
         let top = self
             .procs
@@ -647,11 +644,9 @@ impl Engine {
             })
             .collect();
         Snapshot {
-            seq: self.seq,
             t_ms: now,
             reading: self.last,
             compressed: self.procs.compressed_store(),
-            p: self.last_p,
             s: self.sm.smoothed(),
             state: self.sm.state(),
             history: self.history.iter().collect(),
