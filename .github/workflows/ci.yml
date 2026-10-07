@@ -59,10 +59,26 @@ jobs:
           RUSTFLAGS: -C target-feature=+crt-static
       - name: Clippy
         run: cargo clippy --manifest-path windows/Cargo.toml --target ${{ matrix.target }} --all-targets -- -D warnings
-      - name: Report binary size
+      - name: Unit tests
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --manifest-path windows/Cargo.toml --target ${{ matrix.target }}
+      - name: Self-test on the live system
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
-        run: (Get-Item windows/target/${{ matrix.target }}/release/memmanager.exe).Length
+        run: |
+          $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
+          "Binary size: $((Get-Item $exe).Length) bytes"
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest=20','--out=selftest.json' -Wait -PassThru
+          Get-Content selftest.json
+          if ($p.ExitCode -ne 0) { throw "selftest exited with $($p.ExitCode)" }
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: memmanager-${{ matrix.target }}
+          path: |
+            windows/target/${{ matrix.target }}/release/memmanager.exe
+            selftest.json
+          if-no-files-found: ignore
 
   macos:
     name: macOS app
