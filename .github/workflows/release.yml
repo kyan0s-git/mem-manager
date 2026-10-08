@@ -259,10 +259,10 @@ jobs:
           merge-multiple: true
       - name: Assemble assets and notes
         run: |
-          mkdir -p assets
+          mkdir -p release-files
           cp artifacts/MemManager-*-windows-setup.exe artifacts/MemManager-*-windows-x64.exe artifacts/MemManager-*-windows-arm64.exe \
-             artifacts/MemManager-*-portable.zip artifacts/MemManager-*-macos-universal.* assets/
-          (cd assets && for f in *; do sha256sum "$f" > "$f.sha256"; done)
+             artifacts/MemManager-*-portable.zip artifacts/MemManager-*-macos-universal.* release-files/
+          (cd release-files && for f in *; do sha256sum "$f" > "$f.sha256"; done)
           {
             awk -v v="## v$VERSION" '$0==v || index($0, v " ")==1 {f=1;next} /^## /{f=0} f' CHANGELOG.md
             echo
@@ -277,10 +277,10 @@ jobs:
             echo "## Checksums (SHA-256)"
             echo
             echo '```'
-            cat assets/*.sha256
+            cat release-files/*.sha256
             echo '```'
           } > notes.md
-          ls -la assets
+          ls -la release-files
           cat notes.md
       - name: Create or update the GitHub release
         run: |
@@ -288,11 +288,15 @@ jobs:
           if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then flags+=(--prerelease); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}"
-            gh release upload "$TAG" assets/* --clobber
+            gh release upload "$TAG" release-files/* --clobber
+            # Drop files a previous run attached that this run doesn't publish.
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r name; do
+              [ -e "release-files/$name" ] || gh release delete-asset "$TAG" "$name" --yes
+            done
           else
             target=()
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then target=(--target "${{ needs.verify.outputs.ref }}"); else target=(--verify-tag); fi
-            gh release create "$TAG" "${target[@]}" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}" assets/*
+            gh release create "$TAG" "${target[@]}" --title "MemManager $VERSION" --notes-file notes.md "${flags[@]}" release-files/*
           fi
       - uses: actions/upload-artifact@v4
         with:
