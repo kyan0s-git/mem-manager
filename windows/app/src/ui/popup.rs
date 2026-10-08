@@ -57,6 +57,7 @@ pub enum Hit {
     CheckUpdate,
     InstallUpdate,
     Explainer,
+    Activity,
 }
 
 #[derive(Debug)]
@@ -80,14 +81,12 @@ pub enum UiAction {
     InstallUpdate,
 }
 
-/// Optional dashboard lines (friendly values, updates), shared by layout and paint.
+/// Optional dashboard rows, shared by layout and paint.
 #[derive(Default)]
 struct Extras {
     update: Option<String>,
+    /// The one-time explainer row and the cache caption (friendly values only).
     explainer: bool,
-    room: Option<String>,
-    hits: Option<String>,
-    hint: Option<String>,
 }
 
 const LINE2_H: f32 = 34.0;
@@ -97,6 +96,7 @@ const ROW_H: f32 = 32.0;
 pub enum View {
     Dashboard,
     Settings,
+    Activity,
 }
 
 pub struct Popup {
@@ -238,8 +238,12 @@ impl Popup {
     fn height(&self) -> f32 {
         match self.view {
             View::Dashboard => self.dashboard_height(),
-            View::Settings => SETTINGS_MAX_H,
+            View::Settings | View::Activity => SETTINGS_MAX_H,
         }
+    }
+
+    fn scrollable(&self) -> bool {
+        matches!(self.view, View::Settings | View::Activity)
     }
 
     fn extras(&self) -> Extras {
@@ -248,21 +252,7 @@ impl Popup {
         if let UpdateStatus::Available(o) = &self.update {
             e.update = Some(format!("MemManager {} is available", o.version));
         }
-        if !self.cfg.friendly || snap.reading.total == 0 {
-            return e;
-        }
-        e.explainer = !self.cfg.explained;
-        let window = snap.history_split.len().saturating_sub(1) as u64 * 5_000;
-        if let (Some(first), Some(last)) = (snap.history_split.first(), snap.history_split.last()) {
-            e.room =
-                values::room_line(values::room_made(*first, *last, snap.reading.total), window);
-        }
-        e.hits = values::cache_line(snap.cache_hits, snap.disk_reads, snap.hits_window_ms);
-        e.hint = snap
-            .top
-            .iter()
-            .filter(|r| !r.critical)
-            .find_map(|r| values::idle_app_hint(&r.name, r.private, r.idle_min));
+        e.explainer = self.cfg.friendly && !self.cfg.explained && snap.reading.total > 0;
         e
     }
 
@@ -270,19 +260,11 @@ impl Popup {
         let rows = self.snap.top.len().min(5) as f32;
         let mut h = 280.0 + rows * 32.0 + 8.0;
         let e = self.extras();
-        if self.cfg.friendly {
-            h += LINE2_H; // cache caption under the breakdown
-        }
-        h += [e.room.is_some(), e.hits.is_some(), e.hint.is_some()]
-            .iter()
-            .filter(|b| **b)
-            .count() as f32
-            * LINE2_H;
         if e.update.is_some() {
             h += ROW_H + 4.0;
         }
         if e.explainer {
-            h += ROW_H + 4.0;
+            h += LINE2_H + ROW_H + 4.0; // cache caption + "Why?" row
         }
         if !self.snap.privileges.profile {
             h += 40.0;
@@ -453,7 +435,7 @@ impl Popup {
     }
 
     pub fn on_wheel(&mut self, delta: i16) {
-        if self.view != View::Settings {
+        if !self.scrollable() {
             return;
         }
         let viewport = SETTINGS_MAX_H - HEADER_H;
@@ -469,7 +451,7 @@ impl Popup {
         const VK_SPACE: u16 = 0x20;
         match vk {
             VK_ESCAPE => {
-                if self.view == View::Settings {
+                if self.scrollable() {
                     self.view = View::Dashboard;
                     self.focus = None;
                     return Some(UiAction::Resize);
@@ -499,7 +481,7 @@ impl Popup {
     }
 
     fn ensure_focus_visible(&mut self) {
-        if self.view != View::Settings {
+        if !self.scrollable() {
             return;
         }
         if let Some((r, _)) = self.focus.and_then(|i| self.hits.get(i)) {
@@ -523,6 +505,12 @@ impl Popup {
         match h {
             Hit::Settings => {
                 self.view = View::Settings;
+                self.scroll = 0.0;
+                self.focus = None;
+                Some(UiAction::Resize)
+            }
+            Hit::Activity => {
+                self.view = View::Activity;
                 self.scroll = 0.0;
                 self.focus = None;
                 Some(UiAction::Resize)
@@ -607,6 +595,7 @@ impl Popup {
         match self.view {
             View::Dashboard => self.draw_dashboard(&g),
             View::Settings => self.draw_settings(&g),
+            View::Activity => self.draw_activity(&g),
         }
         if let Some((r, _)) = self.focus.and_then(|i| self.hits.get(i)) {
             g.stroke_round(r.inset(-2.0), 6.0, self.pal.text, 2.0);
@@ -888,7 +877,7 @@ impl Popup {
             );
         }
         y += 48.0;
-        if friendly {
+        if extras.explainer {
             g.text_wrapped(
                 "Speed-up cache keeps recent files and app data in memory. Windows hands it to apps the moment they need it.",
                 Rect::new(PAD, y - 6.0, W - 2.0 * PAD, LINE2_H),
@@ -934,16 +923,23 @@ impl Popup {
         } else if !friendly && snap.history.len() >= 2 {
             g.sparkline(chart, &snap.history, st_col, st_col.with_alpha(0.14));
         }
-        y += 52.0;
-        for line in [&extras.room, &extras.hits].into_iter().flatten() {
-            g.text_wrapped(
-                line,
-                Rect::new(PAD, y - 4.0, W - 2.0 * PAD, LINE2_H),
-                Font::Caption,
-                p.text2,
-            );
-            y += LINE2_H;
+        // Each action as a dot on the time axis, so its effect on the curve is visible.
+        let window = snap.history.len().saturating_sub(1) as u64 * 5_000;
+        for a in snap.activity.iter().filter(|a| !a.alert) {
+            if let Some(f) = values::marker_pos(snap.t_ms.saturating_sub(a.t_ms), window) {
+                let x = chart.x + chart.w * f;
+                g.line(
+                    x,
+                    chart.y,
+                    x,
+                    chart.bottom(),
+                    p.accent.with_alpha(0.35),
+                    1.0,
+                );
+                g.circle(x, chart.bottom(), 3.0, p.accent);
+            }
         }
+        y += 52.0;
         g.line(PAD, y, W - PAD, y, p.divider, 1.0);
         y += 10.0;
 
@@ -992,6 +988,8 @@ impl Popup {
                 ("growing fast".to_string(), p.warn)
             } else if row.slope_mib_h >= 30.0 {
                 (format!("\u{2197} {:.0} MB/h", row.slope_mib_h), p.text3)
+            } else if let Some(what) = row.acted {
+                (what.to_string(), p.accent)
             } else if friendly && row.idle_min >= 60.0 && !row.critical {
                 (format!("idle {}", values::fmt_idle(row.idle_min)), p.text3)
             } else if row.lowered {
@@ -1027,15 +1025,6 @@ impl Popup {
                 "Why? \u{2192}",
                 Hit::Explainer,
             );
-        }
-        if let Some(hint) = &extras.hint {
-            g.text_wrapped(
-                hint,
-                Rect::new(PAD, y - 2.0, W - 2.0 * PAD, LINE2_H),
-                Font::Caption,
-                p.text2,
-            );
-            y += LINE2_H;
         }
 
         // Notes: pool leak, privileges.
@@ -1073,75 +1062,66 @@ impl Popup {
             y += 40.0;
         }
 
-        // Last action and its measured impact.
-        let (l1, l2) = match snap.ledger.first() {
-            Some(e) => {
-                let freed = if e.freed > 0 {
-                    format!(" · {} freed", fmt_bytes(e.freed))
-                } else if !e.detail.is_empty() {
-                    format!(" · {}", e.detail)
-                } else {
-                    String::new()
-                };
-                let impact = if e.pending {
-                    "measuring impact…".to_string()
-                } else if e.refault_ratio < 0.05 {
-                    "no slowdown measured".to_string()
-                } else if e.refault_ratio < 0.25 {
-                    "a few pages were read back afterwards".to_string()
-                } else {
-                    "caused disk page-ins — backing off".to_string()
-                };
-                let who = if e.manual { "" } else { "automatic · " };
-                (
-                    format!("{}{freed}", e.label),
-                    format!(
-                        "{who}{} · {}",
-                        fmt_ago(snap.t_ms.saturating_sub(e.t_ms)),
-                        impact
-                    ),
-                )
-            }
-            None if friendly => (
-                if snap.state == PressureState::Normal {
-                    format!(
-                        "Nothing to clean: {} ready for apps.",
-                        fmt_bytes(sp.ready())
-                    )
-                } else {
-                    "Watching memory pressure…".into()
-                },
-                "MemManager steps in on its own if memory gets tight.".into(),
-            ),
-            None => (
-                if snap.state == PressureState::Normal {
-                    "Memory is healthy."
-                } else {
-                    "Watching memory pressure…"
-                }
-                .into(),
-                "No actions needed yet.".into(),
-            ),
-        };
+        // Now / last action, with the way into the activity log.
+        let now = values::now_line(
+            snap.paused,
+            !snap.privileges.profile,
+            snap.game_mode,
+            snap.acting,
+            snap.state,
+        );
         g.text(
-            &l1,
+            &format!("Now: {now}"),
             Rect::new(PAD, y, W - 2.0 * PAD, 18.0),
             Font::Caption,
             p.text2,
             Align::Left,
         );
-        let l2_col = if l2.ends_with("no slowdown measured") {
-            p.good
-        } else {
-            p.text3
+        let (last, last_col) = match snap.activity.first() {
+            Some(a) => {
+                let col = if a.alert {
+                    p.warn
+                } else {
+                    match values::result_text(a.freed, a.refault_ratio, a.pending).1 {
+                        values::Tone::Good => p.good,
+                        values::Tone::Warn => p.warn,
+                        values::Tone::Neutral => p.text3,
+                    }
+                };
+                (
+                    format!(
+                        "Last: {} · {}",
+                        a.title,
+                        fmt_ago(snap.t_ms.saturating_sub(a.t_ms))
+                    ),
+                    col,
+                )
+            }
+            None if friendly && snap.state == PressureState::Normal => (
+                format!("Nothing to clean: {} ready for apps", fmt_bytes(sp.ready())),
+                p.text3,
+            ),
+            None => ("No actions yet".to_string(), p.text3),
         };
+        let link = Rect::new(W - PAD - 80.0, y + 18.0, 80.0, 18.0);
         g.text(
-            &l2,
-            Rect::new(PAD, y + 18.0, W - 2.0 * PAD, 18.0),
+            &last,
+            Rect::new(PAD, y + 18.0, W - 2.0 * PAD - 84.0, 18.0),
             Font::Caption,
-            l2_col,
+            last_col,
             Align::Left,
         );
+        if self.hovered(Hit::Activity) {
+            g.fill_round(link.inset(-3.0), 5.0, p.control_hover);
+        }
+        g.text(
+            "Activity \u{2192}",
+            link,
+            Font::CaptionStrong,
+            p.accent,
+            Align::Right,
+        );
+        self.hits.push((link.inset(-3.0), Hit::Activity));
         y += 44.0;
 
         // Footer.
@@ -1219,25 +1199,163 @@ impl Popup {
         *y += 38.0;
     }
 
-    fn draw_settings(&mut self, g: &Gfx) {
+    /// Fixed header with a back button, then a clipped, scrolled content area.
+    /// Returns (first hit index, content top).
+    fn begin_scroll_view(&mut self, g: &Gfx, title: &str) -> (usize, f32) {
         let p = self.pal;
-        let cfg = self.cfg.clone();
-        let snap = self.snap.clone();
-        // Fixed header.
         self.icon_button(g, Rect::new(10.0, 12.0, 32.0, 32.0), "\u{E72B}", Hit::Back);
         g.text(
-            "Settings",
+            title,
             Rect::new(50.0, 12.0, 200.0, 32.0),
             Font::Header,
             p.text,
             Align::Left,
         );
         g.line(PAD, HEADER_H - 1.0, W - PAD, HEADER_H - 1.0, p.divider, 1.0);
+        g.clip(Rect::new(0.0, HEADER_H, W, SETTINGS_MAX_H - HEADER_H));
+        (self.hits.len(), HEADER_H - self.scroll)
+    }
 
+    /// Ends a scroll view: records the content height, drops hits outside the
+    /// viewport and draws the scroll indicator.
+    fn end_scroll_view(&mut self, g: &Gfx, first_hit: usize, top: f32, y: f32) {
         let viewport = Rect::new(0.0, HEADER_H, W, SETTINGS_MAX_H - HEADER_H);
-        g.clip(viewport);
-        let first_hit = self.hits.len();
-        let top = HEADER_H - self.scroll;
+        self.content_h = y - top;
+        g.unclip();
+        let mut i = first_hit;
+        while i < self.hits.len() {
+            let r = self.hits[i].0;
+            if r.bottom() <= viewport.y || r.y >= viewport.bottom() {
+                self.hits.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if self.content_h > viewport.h {
+            let frac = viewport.h / self.content_h;
+            let th = (viewport.h * frac).max(24.0);
+            let max = self.content_h - viewport.h;
+            let ty = viewport.y + (viewport.h - th) * (self.scroll / max).clamp(0.0, 1.0);
+            g.fill_round(
+                Rect::new(W - 6.0, ty + 2.0, 3.0, th - 4.0),
+                1.5,
+                self.pal.text3.with_alpha(0.6),
+            );
+        }
+    }
+
+    /// What MemManager did, why, to which apps, and what it measurably changed.
+    fn draw_activity(&mut self, g: &Gfx) {
+        let p = self.pal;
+        let snap = self.snap.clone();
+        let (first_hit, top) = self.begin_scroll_view(g, "Activity");
+        let mut y = top + 14.0;
+        let w = W - 2.0 * PAD;
+
+        // Summary: the actions in the log, plus what the cache did meanwhile.
+        let acts = snap.activity.iter().filter(|a| a.measured);
+        let (n, freed, slow) = acts.fold((0, 0u64, 0), |(n, f, k), a| {
+            (
+                n + 1,
+                f + a.freed,
+                k + usize::from(!a.pending && a.refault_ratio >= 0.25),
+            )
+        });
+        g.text(
+            &values::summary(n, freed, slow),
+            Rect::new(PAD, y, w, 20.0),
+            Font::BodyStrong,
+            p.text,
+            Align::Left,
+        );
+        y += 24.0;
+        let window = snap.history_split.len().saturating_sub(1) as u64 * 5_000;
+        let room = match (snap.history_split.first(), snap.history_split.last()) {
+            (Some(a), Some(b)) => {
+                values::room_line(values::room_made(*a, *b, snap.reading.total), window)
+            }
+            _ => None,
+        };
+        let hits = values::cache_line(snap.cache_hits, snap.disk_reads, snap.hits_window_ms);
+        for line in [room, hits].into_iter().flatten() {
+            y += g.text_wrapped(&line, Rect::new(PAD, y, w, 40.0), Font::Caption, p.text2) + 4.0;
+        }
+        y += 6.0;
+        g.line(PAD, y, W - PAD, y, p.divider, 1.0);
+        y += 12.0;
+
+        if snap.activity.is_empty() {
+            y += g.text_wrapped(
+                "Nothing yet. MemManager only steps in when memory gets tight, and every step it takes shows up here with the reason and its measured effect.",
+                Rect::new(PAD, y, w, 60.0),
+                Font::Caption,
+                p.text3,
+            ) + 12.0;
+        }
+        for a in &snap.activity {
+            let ago = fmt_ago(snap.t_ms.saturating_sub(a.t_ms));
+            let ago_w = g.text_width(&ago, Font::Caption) + 4.0;
+            let dot = if a.alert { p.warn } else { p.accent };
+            g.circle(PAD + 3.0, y + 9.0, 3.0, dot);
+            g.text(
+                &a.title,
+                Rect::new(PAD + 12.0, y, w - 12.0 - ago_w, 18.0),
+                Font::BodyStrong,
+                p.text,
+                Align::Left,
+            );
+            g.text(
+                &ago,
+                Rect::new(W - PAD - ago_w, y, ago_w, 18.0),
+                Font::Caption,
+                p.text3,
+                Align::Right,
+            );
+            y += 20.0;
+            let who = if a.manual { "" } else { "Automatic · " };
+            if !a.why.is_empty() {
+                y += g.text_wrapped(
+                    &format!("{who}{}", a.why),
+                    Rect::new(PAD + 12.0, y, w - 12.0, 40.0),
+                    Font::Caption,
+                    p.text2,
+                );
+            }
+            let (result, col) = if a.measured {
+                let (t, tone) = values::result_text(a.freed, a.refault_ratio, a.pending);
+                let c = match tone {
+                    values::Tone::Good => p.good,
+                    values::Tone::Warn => p.warn,
+                    values::Tone::Neutral => p.text3,
+                };
+                (t, c)
+            } else {
+                (String::new(), p.text3)
+            };
+            let last = match (a.detail.is_empty(), result.is_empty()) {
+                (true, true) => String::new(),
+                (false, true) => a.detail.clone(),
+                (true, false) => result,
+                (false, false) => format!("{} · {result}", a.detail),
+            };
+            if !last.is_empty() {
+                y += g.text_wrapped(
+                    &last,
+                    Rect::new(PAD + 12.0, y, w - 12.0, 40.0),
+                    Font::Caption,
+                    col,
+                );
+            }
+            y += 12.0;
+        }
+        self.end_scroll_view(g, first_hit, top, y);
+    }
+
+    fn draw_settings(&mut self, g: &Gfx) {
+        let p = self.pal;
+        let cfg = self.cfg.clone();
+        let snap = self.snap.clone();
+        let (first_hit, top) = self.begin_scroll_view(g, "Settings");
         let mut y = top;
 
         self.section(g, &mut y, "VALUES");
@@ -1616,29 +1734,6 @@ impl Popup {
             p.text3,
         ) + 16.0;
 
-        self.content_h = y - top;
-        g.unclip();
-        // Hits outside the viewport are not clickable.
-        let mut i = first_hit;
-        while i < self.hits.len() {
-            let r = self.hits[i].0;
-            if r.bottom() <= viewport.y || r.y >= viewport.bottom() {
-                self.hits.remove(i);
-            } else {
-                i += 1;
-            }
-        }
-        // Scroll indicator.
-        if self.content_h > viewport.h {
-            let frac = viewport.h / self.content_h;
-            let th = (viewport.h * frac).max(24.0);
-            let max = self.content_h - viewport.h;
-            let ty = viewport.y + (viewport.h - th) * (self.scroll / max).clamp(0.0, 1.0);
-            g.fill_round(
-                Rect::new(W - 6.0, ty + 2.0, 3.0, th - 4.0),
-                1.5,
-                p.text3.with_alpha(0.6),
-            );
-        }
+        self.end_scroll_view(g, first_hit, top, y);
     }
 }

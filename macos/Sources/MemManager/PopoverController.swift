@@ -15,7 +15,10 @@ final class DashboardViewController: NSViewController {
     let sparkCaption = label("Memory used · last 10 minutes", size: 11, color: .tertiaryLabelColor)
     let spark = SparklineView()
     let cacheNote = caption("Speed-up cache keeps recent files in memory. macOS hands it to apps the moment they need it.")
-    let roomNote = caption(color: .secondaryLabelColor)
+    let activityLink = NSButton(title: "", target: nil, action: nil)
+    private var mainStack: NSStackView!
+    private var activityPage: ActivityPageView?
+    private var lastSnap = Snapshot()
     let updateButton = NSButton(title: "", target: nil, action: nil)
     let explainerButton = NSButton(title: "", target: nil, action: nil)
     let appsCaption = label("Apps using the most memory", size: 11, weight: .semibold, color: .secondaryLabelColor)
@@ -54,7 +57,8 @@ final class DashboardViewController: NSViewController {
         profile.target = self
         profile.action = #selector(profileChanged)
         profile.controlSize = .small
-        for (b, sel) in [(updateButton, #selector(installUpdate)), (explainerButton, #selector(openExplainer))] {
+        for (b, sel) in [(updateButton, #selector(installUpdate)), (explainerButton, #selector(openExplainer)),
+                         (activityLink, #selector(openActivity))] {
             b.isBordered = false
             b.bezelStyle = .inline
             b.alignment = .left
@@ -62,7 +66,10 @@ final class DashboardViewController: NSViewController {
             b.action = sel
         }
         explainerButton.attributedTitle = linkTitle("Cache now counts as ready memory. Why? →")
-        for c in [cacheNote, roomNote] { c.preferredMaxLayoutWidth = 312 }
+        cacheNote.preferredMaxLayoutWidth = 312
+        activityLink.attributedTitle = linkTitle("Activity →")
+        activityLink.setContentHuggingPriority(.required, for: .horizontal)
+        action2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let titleRow = NSStackView(views: [titleLabel, chip])
         titleRow.spacing = 8
@@ -90,11 +97,14 @@ final class DashboardViewController: NSViewController {
         let footer = NSStackView(views: [nudgeButton, NSView(), profile])
         footer.alignment = .centerY
 
+        let statusRow = NSStackView(views: [action2, NSView(), activityLink])
+        statusRow.alignment = .centerY
         let stack = NSStackView(views: [
-            header, separator(), breakdown, legendGrid, cacheNote, sparkCaption, spark, roomNote, separator(),
+            header, separator(), breakdown, legendGrid, cacheNote, sparkCaption, spark, separator(),
             appsCaption, appsStack, idleCaption, idleStack, separator(), updateButton, explainerButton,
-            action1, action2, footer,
+            action1, statusRow, footer,
         ])
+        mainStack = stack
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -102,19 +112,44 @@ final class DashboardViewController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setCustomSpacing(4, after: sparkCaption)
         stack.setCustomSpacing(2, after: action1)
-        root.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: root.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            root.widthAnchor.constraint(equalToConstant: 340),
-        ])
-        for v in [header, breakdown, spark, appsStack, idleStack, footer, legendGrid, cacheNote, roomNote] {
+        root.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        pin(stack)
+        for v in [header, breakdown, spark, appsStack, idleStack, footer, legendGrid, cacheNote, statusRow] {
             v.translatesAutoresizingMaskIntoConstraints = false
             v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
         }
     }
+
+    /// Makes `v` the popover's content, filling it.
+    private func pin(_ v: NSView) {
+        v.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            v.topAnchor.constraint(equalTo: view.topAnchor),
+            v.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    /// Swaps between the dashboard and the activity page (built on first use).
+    private func setActivity(_ on: Bool) {
+        if on {
+            let page = activityPage ?? ActivityPageView { [weak self] in self?.setActivity(false) }
+            activityPage = page
+            mainStack.removeFromSuperview()
+            pin(page)
+            page.render(lastSnap)
+        } else {
+            activityPage?.removeFromSuperview()
+            activityPage = nil
+            pin(mainStack)
+        }
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = view.fittingSize
+    }
+
+    @objc private func openActivity() { setActivity(true) }
 
     private func separator() -> NSView {
         let b = NSBox()
@@ -138,6 +173,11 @@ final class DashboardViewController: NSViewController {
 
     func render(_ snap: Snapshot, settings: AppSettings, helperInstalled: Bool) {
         _ = view
+        lastSnap = snap
+        if let page = activityPage {
+            page.render(snap)
+            return
+        }
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let preset = settings.preset == .mono ? ColorPreset.system : settings.preset
         let col = Palette.stateColor(snap.state, preset: preset, custom: settings.customColors, dark: dark)
@@ -169,16 +209,6 @@ final class DashboardViewController: NSViewController {
             spark.values = snap.historyApps
             spark.under = zip(snap.historyApps, snap.historyCache).map { $0 + $1 }
             spark.underColor = .systemTeal
-            let window = UInt64(max(0, snap.historyApps.count - 1)) * 5_000
-            if let fa = snap.historyApps.first, let la = snap.historyApps.last,
-               let fc = snap.historyCache.first, let lc = snap.historyCache.last,
-               let line = Presentation.roomLine(
-                   bytes: Presentation.roomMade(first: (fa, fc), last: (la, lc), total: r.total), windowMs: window) {
-                roomNote.stringValue = line
-                roomNote.isHidden = false
-            } else {
-                roomNote.isHidden = true
-            }
         } else {
             subtitle.stringValue = r.total > 0 ? "\(fmtBytes(r.used)) of \(fmtBytes(r.total)) used" : "Reading memory…"
             line3.stringValue = "Kernel: \(r.kernelLevelName) · Swap \(fmtBytes(r.swapUsed)) · \(String(format: "%.1f", r.compressionRatio))× compression"
@@ -197,9 +227,13 @@ final class DashboardViewController: NSViewController {
             sparkCaption.stringValue = "Memory used · last 10 minutes"
             spark.values = snap.history
             spark.under = []
-            roomNote.isHidden = true
         }
-        cacheNote.isHidden = !friendly
+        // Each action as a dot on the time axis, so its effect on the curve is visible.
+        let window = UInt64(max(0, snap.history.count - 1)) * 5_000
+        spark.markers = snap.activity.filter { !$0.alert }.compactMap {
+            Presentation.markerPos(ageMs: snap.tMs &- $0.tMs, windowMs: window)
+        }
+        cacheNote.isHidden = !(friendly && !settings.explained)
         spark.color = col
         idleCaption.stringValue = friendly
             ? "Idle apps holding real memory — quit to free it"
@@ -220,28 +254,29 @@ final class DashboardViewController: NSViewController {
         idleStack.isHidden = snap.idleHeavy.isEmpty
         rebuild(idleStack, rows: snap.idleHeavy.prefix(3).map { $0 }, idle: true)
 
-        if let e = snap.ledger.first {
-            let freed = e.freed > 0 ? " · \(fmtBytes(e.freed)) freed" : (e.detail.isEmpty ? "" : " · \(e.detail)")
-            action1.stringValue = e.label + freed
-            let impact: String
-            if e.pending { impact = "measuring impact…" }
-            else if e.refaultRatio < 0.05 { impact = "no slowdown measured" }
-            else if e.refaultRatio < 0.25 { impact = "a few pages were read back afterwards" }
-            else { impact = "caused page-ins — backing off" }
-            action2.stringValue = "\(e.manual ? "" : "automatic · ")\(fmtAgo(snap.tMs &- e.tMs)) · \(impact)"
-        } else if friendly {
-            action1.stringValue = snap.state == .normal
-                ? "Nothing to clean: \(fmtBytes(sp.ready)) ready for apps." : "Watching memory pressure…"
-            action2.stringValue = "macOS frees memory on its own when it gets tight."
+        action1.stringValue = "Now: " + Presentation.nowLine(paused: snap.paused, acting: snap.acting, state: snap.state)
+        if let a = snap.activity.first {
+            action2.stringValue = "Last: \(a.title) · \(fmtAgo(snap.tMs &- a.tMs))"
+            action2.textColor = a.alert ? .systemOrange : toneColor(
+                Presentation.resultText(freed: a.freed, refaultRatio: a.refaultRatio, pending: a.pending).1)
         } else {
-            action1.stringValue = snap.state == .normal ? "Memory is healthy — macOS is managing it well." : "Watching memory pressure…"
-            action2.stringValue = "\(snap.visibleProcesses) of your processes monitored"
+            action2.stringValue = friendly && snap.state == .normal
+                ? "Nothing to clean: \(fmtBytes(sp.ready)) ready for apps" : "No actions yet"
+            action2.textColor = .tertiaryLabelColor
         }
         nudgeButton.isEnabled = helperInstalled
         nudgeButton.toolTip = helperInstalled
             ? "Ask apps to release their caches and empty purgeable memory"
             : "Install the helper in Settings to enable Nudge"
         if let i = Profile.allCases.firstIndex(of: settings.profile) { profile.selectedSegment = i }
+    }
+
+    private func toneColor(_ t: Tone) -> NSColor {
+        switch t {
+        case .good: return .systemGreen
+        case .warn: return .systemOrange
+        case .neutral: return .tertiaryLabelColor
+        }
     }
 
     private func rebuild(_ stack: NSStackView, rows: [AppRow], idle: Bool) {

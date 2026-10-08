@@ -6,7 +6,9 @@ use crate::nt::{self, MemCommand};
 use crate::pool::PoolMonitor;
 use crate::privilege::Privileges;
 use crate::procs::ProcTable;
-use crate::shared::{Caps, Command, LedgerRow, Notice, ProcActionKind, ProcRow, Shared, Snapshot};
+use crate::shared::{
+    ActivityRow, Caps, Command, Notice, ProcActionKind, ProcRow, Shared, Snapshot,
+};
 use crate::sysmem::{SysReading, SysSampler};
 use crate::winactions::{self as wa, Lowered, Outcome, ids};
 use memmanager_core::actions::{Ledger, RegretTracker, Scheduler};
@@ -35,6 +37,21 @@ const HISTORY_EVERY_MS: u64 = 5_000;
 /// Cache-hit counters are kept per minute for the last hour.
 const HITS_EVERY_MS: u64 = 60_000;
 const HITS_KEEP: usize = 61;
+/// Activity log length, and how long an app keeps its "trimmed"/"quieted" badge.
+const ACTIVITY_KEEP: usize = 40;
+const ACTED_BADGE_MS: u64 = 30 * 60_000;
+
+/// One logged event (see `ActivityRow`); results come from the ledger.
+struct Act {
+    t_ms: u64,
+    title: String,
+    why: String,
+    detail: String,
+    manual: bool,
+    alert: bool,
+    /// Has a ledger entry at `t_ms` with a measured result.
+    action: bool,
+}
 const LOW_MEM_SUPPRESS_MS: u64 = 30_000;
 const ACTING_MS: u64 = 1_500;
 const COMMIT_WARN_FRACTION: f64 = 0.90;
@@ -67,7 +84,9 @@ pub struct Engine {
     pub scheduler: Scheduler,
     pub regret: RegretTracker,
     pub ledger: Ledger,
-    details: VecDeque<(u64, String)>,
+    activity: VecDeque<Act>,
+    /// (pid, when, what) for the app-list badges.
+    acted: VecDeque<(u32, u64, &'static str)>,
     pub lowered: Lowered,
     prev_sample: Option<Sample>,
     pub last: SysReading,
@@ -106,7 +125,8 @@ impl Engine {
             sm: StateMachine::new(),
             regret: RegretTracker::new(4096),
             ledger: Ledger::new(),
-            details: VecDeque::new(),
+            activity: VecDeque::new(),
+            acted: VecDeque::new(),
             lowered: Lowered::default(),
             prev_sample: None,
             last: SysReading::default(),
@@ -231,15 +251,23 @@ impl Engine {
             ProcActionKind::Trim => "Trimmed",
             ProcActionKind::End => "Ended",
         };
-        let text = if ok {
-            format!("{verb} {name}")
+        let (title, detail) = if ok {
+            (format!("{verb} {name}"), String::new())
         } else {
-            format!("Couldn't change {name} (access denied)")
+            (
+                format!("Couldn't change {name}"),
+                "Windows denied access".to_string(),
+            )
         };
-        self.details.push_back((now, text));
-        if self.details.len() > 64 {
-            self.details.pop_front();
-        }
+        self.log(Act {
+            t_ms: now,
+            title,
+            why: "You chose this in the app list".into(),
+            detail,
+            manual: true,
+            alert: false,
+            action: false,
+        });
         self.next_proc_ms = now;
     }
 
@@ -312,6 +340,15 @@ impl Engine {
                     text: note.clone(),
                 });
             }
+            self.log(Act {
+                t_ms: now,
+                title: "Warned: kernel memory keeps growing".into(),
+                why: note.lines().next().unwrap_or_default().to_string(),
+                detail: "Usually a driver; MemManager can't free it".into(),
+                manual: false,
+                alert: true,
+                action: false,
+            });
             self.pool_note = Some(note);
         }
 
@@ -330,13 +367,22 @@ impl Engine {
                     crate::util::fmt_bytes(p.private)
                 )
             });
+            let why = format!(
+                "{:.0}% of the commit limit is in use; apps may fail to allocate memory.",
+                r.commit_fraction() * 100.0
+            );
             self.shared.notify(Notice::Warning {
                 title: "Commit charge is almost full".into(),
-                text: format!(
-                    "{:.0}% of the commit limit is in use; apps may fail to allocate memory.{}",
-                    r.commit_fraction() * 100.0,
-                    who.unwrap_or_default()
-                ),
+                text: format!("{why}{}", who.clone().unwrap_or_default()),
+            });
+            self.log(Act {
+                t_ms: now,
+                title: "Warned: commit limit almost full".into(),
+                why,
+                detail: who.unwrap_or_default().trim().to_string(),
+                manual: false,
+                alert: true,
+                action: false,
             });
         }
 
@@ -408,6 +454,8 @@ impl Engine {
     pub fn execute(&mut self, id: u8, now: u64, manual: bool) -> Outcome {
         let state = self.sm.state();
         let before = self.last;
+        let why = self.reason(id, manual);
+        let mut names: Vec<String> = Vec::new();
         self.regret.begin(
             now,
             id,
@@ -429,9 +477,9 @@ impl Engine {
                 } else {
                     wa::MEMORY_PRIORITY_LOW
                 };
-                let n = self.deprioritize(now, trim_idle, prio, 8);
-                out.ok = n > 0;
-                out.detail = format!("{n} app(s) moved to low memory priority");
+                names = self.deprioritize(now, trim_idle, prio, 8);
+                out.ok = !names.is_empty();
+                out.detail = format!("{} app(s) moved to low memory priority", names.len());
             }
             ids::PURGE_LOW => {
                 out.ok = wa::run_mem_command(
@@ -445,9 +493,9 @@ impl Engine {
                     wa::run_mem_command(MemCommand::PurgeStandbyList, "purge_standby", &mut out);
             }
             ids::TRIM_IDLE => {
-                let n = self.trim_idle(now, trim_idle, 5);
-                out.ok = n > 0;
-                out.detail = format!("{n} idle app(s) trimmed");
+                names = self.trim_idle(now, trim_idle, 5);
+                out.ok = !names.is_empty();
+                out.detail = format!("{} idle app(s) trimmed", names.len());
             }
             ids::FLUSH_MODIFIED => {
                 out.ok =
@@ -466,7 +514,8 @@ impl Engine {
                 );
             }
             ids::OPTIMIZE_NOW => {
-                let n1 = self.deprioritize(now, trim_idle.min(10.0), wa::MEMORY_PRIORITY_LOW, 32);
+                names = self.deprioritize(now, trim_idle.min(10.0), wa::MEMORY_PRIORITY_LOW, 32);
+                let n1 = names.len();
                 let mut ok = n1 > 0;
                 if self.caps.mem_commands {
                     ok |= wa::run_mem_command(
@@ -482,7 +531,13 @@ impl Engine {
                         );
                     }
                 }
-                let n2 = self.trim_idle(now, trim_idle.min(10.0), 5);
+                let trimmed = self.trim_idle(now, trim_idle.min(10.0), 5);
+                let n2 = trimmed.len();
+                for t in trimmed {
+                    if !names.contains(&t) {
+                        names.push(t);
+                    }
+                }
                 ok |= n2 > 0;
                 out.ok = ok;
                 out.detail = format!(
@@ -536,10 +591,22 @@ impl Engine {
                 .collect();
             out.detail = failed.join(", ");
         }
-        self.details.push_back((now, out.detail.clone()));
-        if self.details.len() > 64 {
-            self.details.pop_front();
-        }
+        let detail = if !names.is_empty() {
+            crate::values::apps_list(&names)
+        } else if !out.ok {
+            out.detail.clone()
+        } else {
+            String::new()
+        };
+        self.log(Act {
+            t_ms: now,
+            title: wa::action_label(id).into(),
+            why,
+            detail,
+            manual,
+            alert: false,
+            action: true,
+        });
         self.acting_until = now + ACTING_MS;
         // Measure the immediate effect right away (the 2 s "after" sample comes later).
         if manual {
@@ -554,7 +621,58 @@ impl Engine {
         out
     }
 
-    fn deprioritize(&mut self, now: u64, idle_min: f64, prio: u32, max: usize) -> usize {
+    /// Why an action runs, in plain words, from the reading that triggered it.
+    fn reason(&self, id: u8, manual: bool) -> String {
+        let r = &self.last;
+        let b = crate::util::fmt_bytes;
+        if manual {
+            return match id {
+                ids::DEEP_CLEAN => "You asked for a deep clean".into(),
+                _ => "You asked".into(),
+            };
+        }
+        match id {
+            ids::DEPRIORITIZE => "Memory got busy; idle background apps now go last in line".into(),
+            ids::PURGE_LOW => format!(
+                "{} of cache that Windows itself marked least useful",
+                b(r.standby_prio0)
+            ),
+            ids::PURGE_STANDBY => format!(
+                "Only {} was quickly free and Windows was already recycling its cache",
+                b(r.sample.fast_avail_bytes)
+            ),
+            ids::GAME_PURGE => format!(
+                "A full-screen game is running and free memory fell to {}",
+                b(r.free_zero)
+            ),
+            ids::TRIM_IDLE => "Apps were competing for memory; these were idle and silent".into(),
+            ids::FLUSH_MODIFIED => format!(
+                "{} of changed pages were waiting to be written out",
+                b(r.modified)
+            ),
+            ids::COMBINE => "PC idle and on power: merging identical pages".into(),
+            _ => String::new(),
+        }
+    }
+
+    fn log(&mut self, a: Act) {
+        self.activity.push_back(a);
+        while self.activity.len() > ACTIVITY_KEEP {
+            self.activity.pop_front();
+        }
+    }
+
+    fn mark_acted(&mut self, pid: u32, now: u64, what: &'static str) {
+        self.acted
+            .retain(|(p, t, _)| *p != pid && now.saturating_sub(*t) < ACTED_BADGE_MS);
+        self.acted.push_back((pid, now, what));
+        while self.acted.len() > 32 {
+            self.acted.pop_front();
+        }
+    }
+
+    /// Lowers the memory priority of idle apps; returns their names.
+    fn deprioritize(&mut self, now: u64, idle_min: f64, prio: u32, max: usize) -> Vec<String> {
         let fg = wa::foreground_pid();
         let audible = wa::audible_pids();
         let cands: Vec<(u32, i64)> = self
@@ -565,13 +683,20 @@ impl Engine {
             .take(max)
             .map(|p| (p.pid, p.create_time))
             .collect();
-        cands
-            .into_iter()
-            .filter(|(pid, ct)| self.lowered.lower(*pid, *ct, prio))
-            .count()
+        let mut names = Vec::new();
+        for (pid, ct) in cands {
+            if self.lowered.lower(pid, ct, prio) {
+                self.mark_acted(pid, now, "quieted");
+                if let Some(p) = self.procs.map.get(&pid) {
+                    names.push(p.name.clone());
+                }
+            }
+        }
+        names
     }
 
-    fn trim_idle(&mut self, now: u64, idle_min: f64, max: usize) -> usize {
+    /// Trims idle apps' working sets; returns their names.
+    fn trim_idle(&mut self, now: u64, idle_min: f64, max: usize) -> Vec<String> {
         let fg = wa::foreground_pid();
         let audible = wa::audible_pids();
         let cands: Vec<u32> = self
@@ -582,7 +707,16 @@ impl Engine {
             .take(max)
             .map(|p| p.pid)
             .collect();
-        cands.into_iter().filter(|pid| wa::trim(*pid)).count()
+        let mut names = Vec::new();
+        for pid in cands {
+            if wa::trim(pid) {
+                self.mark_acted(pid, now, "trimmed");
+                if let Some(p) = self.procs.map.get(&pid) {
+                    names.push(p.name.clone());
+                }
+            }
+        }
+        names
     }
 
     pub fn tick_procs(&mut self, now: u64) {
@@ -594,6 +728,7 @@ impl Engine {
             .prune(|pid, ct| map.get(&pid).is_some_and(|p| p.create_time == ct));
         let headroom_mib =
             self.last.commit_limit.saturating_sub(self.last.commit) as f64 / memmanager_core::MIB;
+        let mut alerts = Vec::new();
         for pid in flagged {
             let Some(p) = self.procs.map.get_mut(&pid) else {
                 continue;
@@ -612,75 +747,122 @@ impl Engine {
             if due && self.cfg.notify_leaks {
                 p.leak_notified_ms = Some(now);
                 p.notified_eta_h = eta.unwrap_or(f64::INFINITY);
+                let runaway = p.leak.runaway && !p.leak.leak;
                 self.shared.notify(Notice::Leak {
                     name: p.name.clone(),
                     slope_mib_h: p.leak.slope,
                     eta_h: eta,
-                    runaway: p.leak.runaway && !p.leak.leak,
+                    runaway,
+                });
+                alerts.push(Act {
+                    t_ms: now,
+                    title: if runaway {
+                        format!("Warned: {} is allocating very fast", p.name)
+                    } else {
+                        format!("Warned: {} looks like it's leaking", p.name)
+                    },
+                    why: format!(
+                        "Grew steadily by about {:.0} MB per hour",
+                        p.leak.slope.max(0.0)
+                    ),
+                    detail: "Restarting it frees the memory".into(),
+                    manual: false,
+                    alert: true,
+                    action: false,
                 });
             }
+        }
+        for a in alerts {
+            self.log(a);
         }
     }
 
     pub fn snapshot(&mut self, now: u64) -> Snapshot {
         let (self_private, self_ws) = self_memory();
         let hits0 = self.hits_marks.front().copied().unwrap_or((now, 0, 0));
-        let top = self
-            .procs
-            .top(6)
-            .into_iter()
-            .map(|p| ProcRow {
-                pid: p.pid,
-                name: p.name.clone(),
-                key: p.key.clone(),
-                private: p.private,
-                working_set: p.working_set,
-                slope_mib_h: if p.hist.as_ref().is_some_and(|h| h.len() >= 10) {
-                    p.leak.slope
-                } else {
-                    0.0
-                },
-                leak: p.leak.leak && !self.cfg.ignores_leaks(&p.key),
-                runaway: p.leak.runaway,
-                lowered: self.lowered.contains(p.pid),
-                critical: p.is_critical(),
-                idle_min: p.idle_minutes(now),
-            })
-            .collect();
-        let ledger = self
-            .ledger
-            .iter()
-            .rev()
-            .take(5)
-            .map(|e| LedgerRow {
-                t_ms: e.t_ms,
-                label: wa::action_label(e.action_id),
-                detail: self
-                    .details
-                    .iter()
-                    .rev()
-                    .find(|(t, _)| *t == e.t_ms)
-                    .map(|(_, d)| d.clone())
-                    .unwrap_or_default(),
-                manual: e.manual,
-                freed: e.freed_bytes(),
-                refault_ratio: e.refault_ratio,
-                pending: e.pending,
-            })
-            .collect();
+        // Lists only the flyout shows are built only while it is visible.
+        let full = self.popup_visible;
+        let acted = |pid: u32| {
+            self.acted
+                .iter()
+                .rev()
+                .find(|(p, t, _)| *p == pid && now.saturating_sub(*t) < ACTED_BADGE_MS)
+                .map(|(_, _, w)| *w)
+        };
+        let top = if full {
+            self.procs
+                .top(6)
+                .into_iter()
+                .map(|p| ProcRow {
+                    pid: p.pid,
+                    name: p.name.clone(),
+                    key: p.key.clone(),
+                    private: p.private,
+                    working_set: p.working_set,
+                    slope_mib_h: if p.hist.as_ref().is_some_and(|h| h.len() >= 10) {
+                        p.leak.slope
+                    } else {
+                        0.0
+                    },
+                    leak: p.leak.leak && !self.cfg.ignores_leaks(&p.key),
+                    runaway: p.leak.runaway,
+                    lowered: self.lowered.contains(p.pid),
+                    critical: p.is_critical(),
+                    idle_min: p.idle_minutes(now),
+                    acted: acted(p.pid),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let activity = if full {
+            self.activity
+                .iter()
+                .rev()
+                .map(|a| {
+                    let e = if a.action {
+                        self.ledger.iter().rev().find(|e| e.t_ms == a.t_ms)
+                    } else {
+                        None
+                    };
+                    ActivityRow {
+                        t_ms: a.t_ms,
+                        title: a.title.clone(),
+                        why: a.why.clone(),
+                        detail: a.detail.clone(),
+                        manual: a.manual,
+                        alert: a.alert,
+                        measured: e.is_some(),
+                        freed: e.map_or(0, |e| e.freed_bytes()),
+                        refault_ratio: e.map_or(0.0, |e| e.refault_ratio),
+                        pending: e.is_some_and(|e| e.pending),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Snapshot {
             t_ms: now,
             reading: self.last,
             compressed: self.procs.compressed_store(),
             s: self.sm.smoothed(),
             state: self.sm.state(),
-            history: self.history.iter().collect(),
-            history_split: self.history_split.iter().collect(),
+            history: if full {
+                self.history.iter().collect()
+            } else {
+                Vec::new()
+            },
+            history_split: if full {
+                self.history_split.iter().collect()
+            } else {
+                Vec::new()
+            },
             cache_hits: self.last.cache_hits_cum.saturating_sub(hits0.1),
             disk_reads: self.last.disk_reads_cum.saturating_sub(hits0.2),
             hits_window_ms: now.saturating_sub(hits0.0),
             top,
-            ledger,
+            activity,
             privileges: self.privileges,
             caps: self.caps,
             game_mode: self.game_mode,

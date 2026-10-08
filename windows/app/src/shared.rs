@@ -34,14 +34,24 @@ pub struct ProcRow {
     pub critical: bool,
     /// Minutes without CPU activity.
     pub idle_min: f64,
+    /// MemManager acted on this app in the last 30 minutes ("trimmed", "quieted").
+    pub acted: Option<&'static str>,
 }
 
+/// One entry of the activity log: what MemManager did (or warned about), why,
+/// to which apps, and — for actions — what it measurably changed.
 #[derive(Clone, Debug, Default)]
-pub struct LedgerRow {
+pub struct ActivityRow {
     pub t_ms: u64,
-    pub label: &'static str,
+    pub title: String,
+    pub why: String,
+    /// Affected apps, or a detail such as an error.
     pub detail: String,
     pub manual: bool,
+    /// A warning or alert rather than an action (no measured result).
+    pub alert: bool,
+    /// Measured result (actions only; from the ledger).
+    pub measured: bool,
     pub freed: u64,
     pub refault_ratio: f64,
     pub pending: bool,
@@ -64,6 +74,8 @@ pub struct Snapshot {
     pub s: f64,
     pub state: PressureState,
     /// Used fraction, one point per ~5 s, oldest first (≤ 120 points).
+    /// `history`, `history_split`, `top` and `activity` are filled only while the
+    /// flyout is visible, so a hidden app does no per-tick allocation for them.
     pub history: Vec<f32>,
     /// (apps, cache) fractions at the same points as `history`.
     pub history_split: Vec<(f32, f32)>,
@@ -72,8 +84,8 @@ pub struct Snapshot {
     pub disk_reads: u64,
     pub hits_window_ms: u64,
     pub top: Vec<ProcRow>,
-    /// Newest first.
-    pub ledger: Vec<LedgerRow>,
+    /// Newest first. Filled only while the flyout is visible.
+    pub activity: Vec<ActivityRow>,
     pub privileges: Privileges,
     pub caps: Caps,
     pub game_mode: bool,

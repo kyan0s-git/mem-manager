@@ -57,6 +57,52 @@ public enum Presentation {
     }
 }
 
+public enum Tone: Equatable { case good, neutral, warn }
+
+extension Presentation {
+    /// "Teams, Slack, Spotify +2".
+    public static func appsList(_ names: [String]) -> String {
+        var s = names.prefix(3).joined(separator: ", ")
+        if names.count > 3 { s += " +\(names.count - 3)" }
+        return s
+    }
+
+    /// What an action measurably changed: "1.1 GB back · no slowdown".
+    public static func resultText(freed: UInt64, refaultRatio: Double, pending: Bool) -> (String, Tone) {
+        let back = freed >= 1 << 20 ? "\(bytes(freed)) back" : "nothing freed"
+        if pending { return ("\(back) · measuring…", .neutral) }
+        if refaultRatio < 0.05 { return ("\(back) · no slowdown", .good) }
+        if refaultRatio < 0.25 { return ("\(back) · a little was read back", .neutral) }
+        return ("\(back) · caused a slowdown, backing off", .warn)
+    }
+
+    /// "3 actions · 2.3 GB back · no slowdowns".
+    public static func summary(actions: Int, freed: UInt64, slowdowns: Int) -> String {
+        guard actions > 0 else { return "No actions yet." }
+        let n = actions == 1 ? "1 action" : "\(actions) actions"
+        let slow = slowdowns == 0 ? "no slowdowns" : (slowdowns == 1 ? "1 slowdown" : "\(slowdowns) slowdowns")
+        return "\(n) · \(bytes(freed)) back · \(slow)"
+    }
+
+    /// What MemManager is doing right now, in a few words.
+    public static func nowLine(paused: Bool, acting: Bool, state: PressureState) -> String {
+        if acting { return "Working on it…" }
+        if paused { return "Paused · not acting on its own" }
+        switch state {
+        case .normal: return "Watching · nothing to do"
+        case .elevated: return "Memory is busy · watching closely"
+        case .high: return "Memory is tight · acting where it helps"
+        case .critical: return "Memory is critical · macOS is reclaiming"
+        }
+    }
+
+    /// Horizontal position (0 = left, 1 = now) of an event `ageMs` ago on a graph spanning `windowMs`.
+    public static func markerPos(ageMs: UInt64, windowMs: UInt64) -> Double? {
+        guard windowMs > 0, ageMs <= windowMs else { return nil }
+        return 1 - Double(ageMs) / Double(windowMs)
+    }
+}
+
 /// Physical memory as a person thinks about it.
 public struct MemorySplit: Equatable {
     public var total: UInt64

@@ -154,18 +154,6 @@ pub fn optimize_preview(st: PressureState, s: &Split, friendly: bool) -> Option<
     ))
 }
 
-/// An idle app holding real memory: the thing worth closing.
-pub fn idle_app_hint(name: &str, private: u64, idle_min: f64) -> Option<String> {
-    if private < 500 << 20 || idle_min < 60.0 {
-        return None;
-    }
-    Some(format!(
-        "{name} has been idle for {} and holds {}. Click it to close.",
-        fmt_idle(idle_min),
-        fmt_bytes(private)
-    ))
-}
-
 /// "3 h", "45 min", "2 days".
 pub fn fmt_idle(min: f64) -> String {
     if min < 60.0 {
@@ -202,6 +190,93 @@ pub fn tooltip(
             fmt_bytes(s.ready())
         )
     }
+}
+
+/// "Teams, Slack, Spotify +2".
+pub fn apps_list(names: &[String]) -> String {
+    let mut s = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if names.len() > 3 {
+        s += &format!(" +{}", names.len() - 3);
+    }
+    s
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Good,
+    Neutral,
+    Warn,
+}
+
+/// What an action measurably changed: "1.1 GB back · no slowdown".
+pub fn result_text(freed: u64, refault_ratio: f64, pending: bool) -> (String, Tone) {
+    let back = if freed >= 1 << 20 {
+        format!("{} back", fmt_bytes(freed))
+    } else {
+        "nothing freed".to_string()
+    };
+    if pending {
+        (format!("{back} · measuring…"), Tone::Neutral)
+    } else if refault_ratio < 0.05 {
+        (format!("{back} · no slowdown"), Tone::Good)
+    } else if refault_ratio < 0.25 {
+        (format!("{back} · a little was read back"), Tone::Neutral)
+    } else {
+        (
+            format!("{back} · caused a slowdown, backing off"),
+            Tone::Warn,
+        )
+    }
+}
+
+/// One line over the activity list: "3 actions · 2.3 GB back · no slowdowns".
+pub fn summary(actions: usize, freed: u64, slowdowns: usize) -> String {
+    if actions == 0 {
+        return "No actions yet.".into();
+    }
+    let n = if actions == 1 {
+        "1 action".to_string()
+    } else {
+        format!("{actions} actions")
+    };
+    let slow = match slowdowns {
+        0 => "no slowdowns".to_string(),
+        1 => "1 slowdown".to_string(),
+        k => format!("{k} slowdowns"),
+    };
+    format!("{n} · {} back · {slow}", fmt_bytes(freed))
+}
+
+/// What MemManager is doing right now, in a few words.
+pub fn now_line(
+    paused: bool,
+    monitor_only: bool,
+    game: bool,
+    acting: bool,
+    st: PressureState,
+) -> &'static str {
+    if acting {
+        "Working on it…"
+    } else if paused {
+        "Paused · not acting on its own"
+    } else if game {
+        "Game mode · staying out of the way"
+    } else if monitor_only {
+        "Watching only · cleaning isn't enabled"
+    } else {
+        match st {
+            PressureState::Normal => "Watching · nothing to do",
+            PressureState::Elevated => "Memory is busy · ready to step in",
+            PressureState::High => "Memory is tight · acting where it helps",
+            PressureState::Critical => "Memory is critical · acting now",
+        }
+    }
+}
+
+/// Horizontal position (0 = left, 1 = now) of an event `age_ms` ago on a
+/// graph spanning `window_ms`; `None` if it is off the graph.
+pub fn marker_pos(age_ms: u64, window_ms: u64) -> Option<f32> {
+    (window_ms > 0 && age_ms <= window_ms).then(|| 1.0 - age_ms as f32 / window_ms as f32)
 }
 
 /// Explainer page linked from the dashboard.
@@ -280,17 +355,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_hint_thresholds() {
-        assert!(
-            idle_app_hint("Slack", 1400 << 20, 180.0)
-                .unwrap()
-                .contains("3 h")
-        );
-        assert!(idle_app_hint("Slack", 100 << 20, 180.0).is_none());
-        assert!(idle_app_hint("Slack", 1400 << 20, 20.0).is_none());
-    }
-
-    #[test]
     fn tooltips_fit() {
         let s = Split::new(16 * G, 6 * G, 2 * G);
         for f in [true, false] {
@@ -301,6 +365,34 @@ mod tests {
         assert!(
             tooltip(false, PressureState::Normal, &s, 8 * G, 50.0).starts_with("Memory 50% in use")
         );
+    }
+
+    #[test]
+    fn activity_text() {
+        let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(apps_list(&n(&["A", "B"])), "A, B");
+        assert_eq!(apps_list(&n(&["A", "B", "C", "D", "E"])), "A, B, C +2");
+        assert_eq!(apps_list(&[]), "");
+        assert_eq!(
+            result_text(G, 0.0, false),
+            ("1.0 GB back · no slowdown".into(), Tone::Good)
+        );
+        assert_eq!(result_text(0, 0.5, false).1, Tone::Warn);
+        assert!(result_text(0, 0.0, true).0.ends_with("measuring…"));
+        assert_eq!(summary(0, 0, 0), "No actions yet.");
+        assert_eq!(summary(3, G, 0), "3 actions · 1.0 GB back · no slowdowns");
+        assert_eq!(summary(1, 0, 1), "1 action · 0 KB back · 1 slowdown");
+        assert_eq!(
+            now_line(false, false, false, false, PressureState::Normal),
+            "Watching · nothing to do"
+        );
+        assert_eq!(
+            now_line(true, false, true, true, PressureState::High),
+            "Working on it…"
+        );
+        assert_eq!(marker_pos(0, 600_000), Some(1.0));
+        assert_eq!(marker_pos(300_000, 600_000), Some(0.5));
+        assert_eq!(marker_pos(700_000, 600_000), None);
     }
 
     #[test]

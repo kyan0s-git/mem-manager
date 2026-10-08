@@ -76,6 +76,9 @@ final class SparklineView: NSView {
     /// Optional series drawn first (e.g. apps + cache stacked behind apps).
     var under: [Double] = [] { didSet { needsDisplay = true } }
     var underColor: NSColor = .systemTeal { didSet { needsDisplay = true } }
+    /// Action times as positions along the time axis (0 = left, 1 = now).
+    var markers: [Double] = [] { didSet { if markers != oldValue { needsDisplay = true } } }
+    var markerColor: NSColor = .controlAccentColor
 
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 38) }
 
@@ -89,6 +92,17 @@ final class SparklineView: NSView {
         base.stroke()
         if under.count >= 2 { series(under, color: underColor, alpha: 0.22, in: r) }
         if values.count >= 2 { series(values, color: color, alpha: under.isEmpty ? 0.15 : 0.3, in: r) }
+        for m in markers {
+            let x = r.minX + r.width * CGFloat(min(1, max(0, m)))
+            markerColor.withAlphaComponent(0.35).setStroke()
+            let tick = NSBezierPath()
+            tick.move(to: NSPoint(x: x, y: r.minY))
+            tick.line(to: NSPoint(x: x, y: r.maxY))
+            tick.lineWidth = 1
+            tick.stroke()
+            markerColor.setFill()
+            NSBezierPath(ovalIn: NSRect(x: x - 3, y: r.minY - 3, width: 6, height: 6)).fill()
+        }
     }
 
     private func series(_ vals: [Double], color: NSColor, alpha: CGFloat, in r: NSRect) {

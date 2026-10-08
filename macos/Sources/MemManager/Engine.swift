@@ -15,14 +15,21 @@ struct AppRow: Equatable {
     var idleHours: Double?
 }
 
-struct LedgerRow: Equatable {
+/// One activity entry: what MemManager did (or warned about), why, to which
+/// apps, and — for actions — what it measurably changed (from the ledger).
+struct ActivityRow: Equatable {
     var tMs: UInt64
-    var label: String
-    var detail: String
-    var manual: Bool
-    var freed: UInt64
-    var refaultRatio: Double
-    var pending: Bool
+    var title: String
+    var why: String
+    var detail: String = ""
+    var manual = false
+    var alert = false
+    /// Links the entry to its ledger entry (actions only).
+    var isAction = false
+    var measured = false
+    var freed: UInt64 = 0
+    var refaultRatio = 0.0
+    var pending = false
 }
 
 struct Snapshot: Equatable {
@@ -36,7 +43,9 @@ struct Snapshot: Equatable {
     var historyCache: [Double] = []
     var apps: [AppRow] = []
     var idleHeavy: [AppRow] = []
-    var ledger: [LedgerRow] = []
+    /// Newest first. `apps`, `idleHeavy` and `activity` are filled only while the
+    /// popover is open, so a closed app does no per-tick work building them.
+    var activity: [ActivityRow] = []
     var paused = false
     var acting = false
     var visibleProcesses = 0
@@ -76,6 +85,7 @@ final class Engine {
     private var scheduler: Scheduler
     private var regret: RegretTracker
     private var ledger = Ring<LedgerEntry>(capacity: 64)
+    private var activity: [ActivityRow] = []
     private var history = Ring<Double>(capacity: 120)
     private var historyApps = Ring<Double>(capacity: 120)
     private var historyCache = Ring<Double>(capacity: 120)
@@ -238,6 +248,9 @@ final class Engine {
         lastSwapNoticeMs = now
         let top = procs.top(3).map { "\($0.name) (\(fmtBytes($0.footprint)))" }.joined(separator: ", ")
         onMain { $0.onNotice?(.swap(text: "Swap is growing about \(Int(perMin)) MB/min. Largest apps: \(top).")) }
+        log(ActivityRow(tMs: now, title: "Warned: your Mac is swapping heavily",
+                        why: "Swap grew about \(Int(perMin)) MB per minute while memory was busy",
+                        detail: "Largest: \(top)", alert: true))
     }
 
     private func maybeAct(now: UInt64, state: PressureState) {
@@ -260,6 +273,17 @@ final class Engine {
     /// Runs an action; nudges complete asynchronously through the helper.
     func execute(_ id: Int, now: UInt64, manual: Bool, target: AppRow? = nil) {
         if let i = scheduler.index(of: id) { scheduler.actions[i].markRun(now) }
+        let why: String
+        var title = ActionID.label(id)
+        if manual {
+            why = "You asked"
+        } else if id == ActionID.quitIdle, let t = target {
+            title = "Quit \(t.name)"
+            why = "Idle for \(fmtHours(t.idleHours ?? 0)) holding \(fmtBytes(t.footprint)), and on your auto-quit list"
+        } else {
+            why = "Memory pressure stayed high; asked apps to release caches they can rebuild"
+        }
+        log(ActivityRow(tMs: now, title: title, why: why, manual: manual, isAction: true))
         let before = last
         regret.begin(tMs: now, actionId: id, manual: manual, state: sm.state,
                      hardCum: before.sample.hardFaultsCum, fastAvail: before.sample.fastAvailBytes, ledger: &ledger)
@@ -296,10 +320,16 @@ final class Engine {
             self.regret.begin(tMs: now, actionId: id, manual: true, state: self.sm.state,
                               hardCum: self.last.sample.hardFaultsCum, fastAvail: self.last.sample.fastAvailBytes,
                               detail: detail, ledger: &self.ledger)
+            self.log(ActivityRow(tMs: now, title: ActionID.label(id), why: "You asked", manual: true, isAction: true))
             self.nextSysMs = now + 2_000
             self.reschedule()
             self.publish()
         }
+    }
+
+    private func log(_ row: ActivityRow) {
+        activity.append(row)
+        if activity.count > 40 { activity.removeFirst(activity.count - 40) }
     }
 
     func nudgeNow() {
@@ -320,9 +350,14 @@ final class Engine {
             }
             guard due else { continue }
             procs.markNotified(key, nowMs: now, eta: eta)
+            let runaway = g.leak.runaway && !g.leak.leak
             let n = Notice.leak(key: key, name: g.name, slope: g.leak.slope, etaH: eta,
-                                runaway: g.leak.runaway && !g.leak.leak, bundlePath: g.bundlePath)
+                                runaway: runaway, bundlePath: g.bundlePath)
             onMain { $0.onNotice?(n) }
+            log(ActivityRow(tMs: now,
+                            title: runaway ? "Warned: \(g.name) is allocating very fast" : "Warned: \(g.name) looks like it's leaking",
+                            why: "Grew steadily by about \(Int(max(0, g.leak.slope))) MB per hour",
+                            detail: "Relaunching it frees the memory", alert: true))
         }
     }
 
@@ -356,15 +391,25 @@ final class Engine {
         s.history = history.elements
         s.historyApps = historyApps.elements
         s.historyCache = historyCache.elements
-        s.apps = procs.top(6).map { g in
-            var r = Engine.row(g)
-            if settings.ignores(g.name) { r.leak = false }
-            return r
-        }
-        s.idleHeavy = sustained(2 * 60_000, now) ? idleHeavy(now: now) : []
-        s.ledger = ledger.elements.reversed().prefix(5).map {
-            LedgerRow(tMs: $0.tMs, label: ActionID.label($0.actionId), detail: $0.detail, manual: $0.manual,
-                      freed: $0.freedBytes, refaultRatio: $0.refaultRatio, pending: $0.pending)
+        if popupVisible {
+            s.apps = procs.top(6).map { g in
+                var r = Engine.row(g)
+                if settings.ignores(g.name) { r.leak = false }
+                return r
+            }
+            s.idleHeavy = sustained(2 * 60_000, now) ? idleHeavy(now: now) : []
+            let entries = ledger.elements
+            s.activity = activity.reversed().map { a in
+                var r = a
+                if a.isAction, let e = entries.last(where: { $0.tMs == a.tMs }) {
+                    r.measured = true
+                    r.freed = e.freedBytes
+                    r.refaultRatio = e.refaultRatio
+                    r.pending = e.pending
+                    if r.detail.isEmpty { r.detail = e.detail }
+                }
+                return r
+            }
         }
         s.paused = paused(now)
         s.acting = now < actingUntil
