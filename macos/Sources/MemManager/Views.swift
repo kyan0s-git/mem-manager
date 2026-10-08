@@ -73,6 +73,9 @@ final class BreakdownView: NSView {
 final class SparklineView: NSView {
     var values: [Double] = [] { didSet { needsDisplay = true } }
     var color: NSColor = .controlAccentColor { didSet { needsDisplay = true } }
+    /// Optional series drawn first (e.g. apps + cache stacked behind apps).
+    var under: [Double] = [] { didSet { needsDisplay = true } }
+    var underColor: NSColor = .systemTeal { didSet { needsDisplay = true } }
 
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 38) }
 
@@ -84,10 +87,14 @@ final class SparklineView: NSView {
         base.line(to: NSPoint(x: r.maxX, y: r.minY))
         base.lineWidth = 1
         base.stroke()
-        guard values.count >= 2 else { return }
+        if under.count >= 2 { series(under, color: underColor, alpha: 0.22, in: r) }
+        if values.count >= 2 { series(values, color: color, alpha: under.isEmpty ? 0.15 : 0.3, in: r) }
+    }
+
+    private func series(_ vals: [Double], color: NSColor, alpha: CGFloat, in r: NSRect) {
         let path = NSBezierPath()
-        for (i, v) in values.enumerated() {
-            let p = NSPoint(x: r.minX + r.width * CGFloat(i) / CGFloat(values.count - 1),
+        for (i, v) in vals.enumerated() {
+            let p = NSPoint(x: r.minX + r.width * CGFloat(i) / CGFloat(vals.count - 1),
                             y: r.minY + r.height * CGFloat(min(1, max(0, v))))
             if i == 0 { path.move(to: p) } else { path.line(to: p) }
         }
@@ -95,13 +102,24 @@ final class SparklineView: NSView {
         fill.line(to: NSPoint(x: r.maxX, y: r.minY))
         fill.line(to: NSPoint(x: r.minX, y: r.minY))
         fill.close()
-        color.withAlphaComponent(0.15).setFill()
+        color.withAlphaComponent(alpha).setFill()
         fill.fill()
         path.lineWidth = 1.5
         path.lineJoinStyle = .round
         color.setStroke()
         path.stroke()
     }
+}
+
+/// A wrapping caption (up to `lines` lines).
+func caption(_ text: String = "", lines: Int = 2, color: NSColor = .tertiaryLabelColor) -> NSTextField {
+    let l = NSTextField(wrappingLabelWithString: text)
+    l.font = .systemFont(ofSize: 11)
+    l.textColor = color
+    l.maximumNumberOfLines = lines
+    l.isSelectable = false
+    l.translatesAutoresizingMaskIntoConstraints = false
+    return l
 }
 
 /// Small rounded "chip" label.

@@ -11,6 +11,9 @@ if let mib = argValue("--bench-child=").flatMap({ Int($0) }) {
     Bench.child(mib: mib, id: argValue("--bench-id=").flatMap { Int($0) } ?? 0,
                 cooperative: args.contains("--cooperative"), parent: argValue("--bench-parent=") ?? "0")
 }
+if args.contains("--check-update") {
+    exit(Updater.cli(pretend: argValue("--pretend-version="), download: args.contains("--download"), out: argValue("--out=")))
+}
 if args.contains("--bench") {
     exit(Bench.run(out: argValue("--out=")))
 }

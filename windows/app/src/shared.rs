@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::privilege::Privileges;
 use crate::sysmem::SysReading;
+use crate::update::Status as UpdateStatus;
 use memmanager_core::state::PressureState;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -13,6 +14,10 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 pub const WM_APP_SNAPSHOT: u32 = WM_APP + 2;
 pub const WM_APP_NOTICE: u32 = WM_APP + 3;
+/// The update status changed (`Shared::update_status`).
+pub const WM_APP_UPDATE: u32 = WM_APP + 10;
+/// An update is being installed: exit so it can replace this copy.
+pub const WM_APP_EXIT_FOR_UPDATE: u32 = WM_APP + 11;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProcRow {
@@ -27,6 +32,8 @@ pub struct ProcRow {
     pub runaway: bool,
     pub lowered: bool,
     pub critical: bool,
+    /// Minutes without CPU activity.
+    pub idle_min: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -58,6 +65,12 @@ pub struct Snapshot {
     pub state: PressureState,
     /// Used fraction, one point per ~5 s, oldest first (≤ 120 points).
     pub history: Vec<f32>,
+    /// (apps, cache) fractions at the same points as `history`.
+    pub history_split: Vec<(f32, f32)>,
+    /// Page faults answered from cache, and pages read from disk, over `hits_window_ms`.
+    pub cache_hits: u64,
+    pub disk_reads: u64,
+    pub hits_window_ms: u64,
     pub top: Vec<ProcRow>,
     /// Newest first.
     pub ledger: Vec<LedgerRow>,
@@ -123,6 +136,7 @@ pub struct Shared {
     pub snapshot: Mutex<Snapshot>,
     commands: Mutex<VecDeque<Command>>,
     notices: Mutex<VecDeque<Notice>>,
+    update: Mutex<UpdateStatus>,
     cmd_event: isize,
     main_hwnd: AtomicIsize,
 }
@@ -134,6 +148,7 @@ impl Shared {
             snapshot: Mutex::new(Snapshot::default()),
             commands: Mutex::new(VecDeque::new()),
             notices: Mutex::new(VecDeque::new()),
+            update: Mutex::new(UpdateStatus::Idle),
             cmd_event: ev.0 as isize,
             main_hwnd: AtomicIsize::new(0),
         })
@@ -147,7 +162,7 @@ impl Shared {
         self.main_hwnd.store(hwnd.0 as isize, Ordering::Release);
     }
 
-    fn post(&self, msg: u32) {
+    pub fn post(&self, msg: u32) {
         let h = self.main_hwnd.load(Ordering::Acquire);
         if h != 0 {
             unsafe {
@@ -188,6 +203,17 @@ impl Shared {
             q.push_back(n);
         }
         self.post(WM_APP_NOTICE);
+    }
+
+    pub fn set_update(&self, s: UpdateStatus) {
+        if let Ok(mut u) = self.update.lock() {
+            *u = s;
+        }
+        self.post(WM_APP_UPDATE);
+    }
+
+    pub fn update_status(&self) -> UpdateStatus {
+        self.update.lock().map(|u| u.clone()).unwrap_or_default()
     }
 
     pub fn take_notices(&self) -> Vec<Notice> {

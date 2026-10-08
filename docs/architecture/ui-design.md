@@ -25,9 +25,11 @@
 
 ### 1.2 Metrics (user picks one)
 
-- **Windows:** memory used % *(default)*, commit %, or available GB.
+- **Windows:** ready for apps *(default; the number shows GB ready, the ring fills with app memory
+  only)*, apps %, or commit %. With Windows-standard values these read Available, In use and
+  Commit, as in Task Manager.
 - **macOS:** memory pressure *(default; the ring shows the policy score `S`, coloured by kernel
-  level)*, memory used %, or compressed GB.
+  level)*, ready for apps, apps & macOS %, or compressed GB.
 
 ### 1.3 Colour tokens
 
@@ -110,3 +112,62 @@ so it meets ≥ 3:1 contrast against the taskbar or menu bar.
   leak. Restarting it does."
 - **Never claim speed-ups we haven't measured.** The ledger's refault data is the only basis for
   "no slowdown detected".
+
+## 5. Friendly values (default) and OS-standard values
+
+People read "memory used" as "memory I can't use", so a cache-filled bar looks like a problem even
+though it's the opposite. The default presentation reframes the same numbers around what people
+actually want: **room for more apps**. Nothing is hidden or invented. Every figure is a real OS
+value, and one switch (**Settings → Values**) returns to the OS's own terms.
+
+| | Friendly *(default)* | Windows standard | macOS: Activity Monitor terms |
+|---|---|---|---|
+| Headline | "9.4 GB ready for apps" (free + standby on Windows; free + cached files on macOS) | "6.6 GB of 16 GB in use" | "9.1 GB of 16 GB used" |
+| Breakdown | Apps · Speed-up cache · Free | In use · Modified · Standby · Free | App · Wired · Compressed · Cached Files |
+| Ring / icon | Fills with app memory only | Task Manager's In use | Pressure, as Activity Monitor |
+| States | Comfortable · Busy · Tight · Critical | Normal · Elevated · High · Critical | Normal · Elevated · High · Critical |
+| Graph | Apps with the cache stacked on top | In use | Memory used |
+
+Friendly mode adds:
+
+- **The cache earning its keep (Windows).** "In the last hour, apps got data back from cache 48,210
+  times instead of reading it from disk." This comes from the kernel's transition-fault counter
+  (`TransitionCount` in `SYSTEM_PERFORMANCE_INFORMATION`) against hard faults. macOS has no
+  equivalent system-wide counter, so this line is Windows-only rather than estimated.
+- **The cache giving way.** "Cache made room for 1.2 GB of app memory in the last 10 minutes."
+  This is shown when apps grew while the cache shrank by at least 128 MB.
+- **An honest preview before a manual clean while memory is comfortable** ("Optimize now" on
+  Windows, "Nudge" on macOS). It says what will happen, what it costs, and that it won't make
+  anything faster right now, then asks. Under real pressure the action runs directly.
+- **Idle apps holding real memory**, such as "idle 3 h" in the app list, with a one-line hint. This
+  points the wish for "low memory" at the one thing that actually frees memory without a cost
+  elsewhere.
+- **A one-time explainer link**, "Cache now counts as ready memory. Why? →", which opens
+  [`docs/understanding-memory.md`](../understanding-memory.md).
+
+**Guardrails.**
+
+- Warnings under real pressure are unchanged.
+- The cache is always visible, only labelled and coloured differently.
+- Switching to standard values restores the OS terms, the "In use" icon metric and the standard
+  breakdown.
+
+## 6. Updates
+
+- **Check:**
+  - Settings → Updates → "Check now".
+  - Automatically once a day (on by default), starting two minutes after launch.
+  - The check asks the GitHub releases API for the newest release newer than the running version.
+    Pre-releases are offered only to pre-release installs (0.x or suffixed versions).
+- **Notify:** a notification appears once per newly found version, and a dashboard row reads
+  "MemManager X is available · Install →".
+- **Install:**
+  - Download the platform's asset and its `.sha256`, and refuse anything that doesn't match.
+  - **Windows, installed:** run the new setup silently. It upgrades in place with the previous
+    choices and starts MemManager again.
+  - **Windows, portable:** swap the exe in place (rename the running file, write the new one) and
+    restart.
+  - **macOS:** unpack the universal zip, check it is MemManager.app, then a small shell step waits
+    for the app to quit, swaps the bundles (restoring the old one if the swap fails) and reopens it.
+- **Footprint:** the check and install run on short-lived background work; nothing stays resident.
+

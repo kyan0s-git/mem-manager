@@ -114,6 +114,8 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           Move-Item "MemManager-*.zip" out/
           Copy-Item "windows/target/${{ matrix.target }}/release/memmanager.exe" "out/memmanager-$arch.exe"
+          # Raw exe for in-app updates of portable copies.
+          Copy-Item "windows/target/${{ matrix.target }}/release/memmanager.exe" "out/MemManager-$env:VERSION-windows-$arch.exe"
           Get-ChildItem *.json -ErrorAction SilentlyContinue | Copy-Item -Destination out/
       - uses: actions/upload-artifact@v4
         with:
@@ -258,7 +260,8 @@ jobs:
       - name: Assemble assets and notes
         run: |
           mkdir -p assets
-          cp artifacts/MemManager-*-windows-setup.exe artifacts/MemManager-*-portable.zip artifacts/MemManager-*-macos-universal.* assets/
+          cp artifacts/MemManager-*-windows-setup.exe artifacts/MemManager-*-windows-x64.exe artifacts/MemManager-*-windows-arm64.exe \
+             artifacts/MemManager-*-portable.zip artifacts/MemManager-*-macos-universal.* assets/
           (cd assets && for f in *; do sha256sum "$f" > "$f.sha256"; done)
           {
             awk -v v="## v$VERSION" '$0==v || index($0, v " ")==1 {f=1;next} /^## /{f=0} f' CHANGELOG.md

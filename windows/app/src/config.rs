@@ -31,26 +31,37 @@ impl IconStyle {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum IconMetric {
+    /// Memory ready for apps (free + cache), i.e. Windows "Available".
     #[default]
+    Ready,
     Used,
     Commit,
-    Available,
 }
 
 impl IconMetric {
-    pub const ALL: [IconMetric; 3] = [IconMetric::Used, IconMetric::Commit, IconMetric::Available];
+    pub const ALL: [IconMetric; 3] = [IconMetric::Ready, IconMetric::Used, IconMetric::Commit];
     pub fn name(self) -> &'static str {
         match self {
+            IconMetric::Ready => "ready",
             IconMetric::Used => "used",
             IconMetric::Commit => "commit",
-            IconMetric::Available => "available",
         }
     }
-    pub fn label(self) -> &'static str {
-        match self {
-            IconMetric::Used => "In use",
-            IconMetric::Commit => "Commit",
-            IconMetric::Available => "Free GB",
+    pub fn parse(v: &str) -> Option<IconMetric> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "ready" | "available" => Some(IconMetric::Ready),
+            "used" => Some(IconMetric::Used),
+            "commit" => Some(IconMetric::Commit),
+            _ => None,
+        }
+    }
+    pub fn label(self, friendly: bool) -> &'static str {
+        match (self, friendly) {
+            (IconMetric::Ready, true) => "Ready GB",
+            (IconMetric::Ready, false) => "Available",
+            (IconMetric::Used, true) => "Apps %",
+            (IconMetric::Used, false) => "In use",
+            (IconMetric::Commit, _) => "Commit",
         }
     }
 }
@@ -104,6 +115,13 @@ pub struct Config {
     pub auto_tiers: [bool; 5],
     pub game_mode: bool,
     pub translucent: bool,
+    /// Friendly values (default): "ready for apps", cache shown as a speed-up,
+    /// calm state names. Off: Windows' standard terms (In use, Standby, …).
+    pub friendly: bool,
+    /// The one-time "why cache counts as ready" note has been seen.
+    pub explained: bool,
+    /// Check GitHub for a newer release once a day.
+    pub auto_update: bool,
     pub notify_leaks: bool,
     pub notify_warnings: bool,
     pub notify_results: bool,
@@ -144,12 +162,15 @@ impl Default for Config {
         Self {
             profile: Profile::Balanced,
             icon_style: IconStyle::Ring,
-            icon_metric: IconMetric::Used,
+            icon_metric: IconMetric::Ready,
             preset: ColorPreset::System,
             custom_colors: [0x0078D4, 0xB58400, 0xC8551B, 0xC42B1C],
             auto_tiers: [true; 5],
             game_mode: true,
             translucent: true,
+            friendly: true,
+            explained: false,
+            auto_update: true,
             notify_leaks: true,
             notify_warnings: true,
             notify_results: false,
@@ -226,10 +247,7 @@ impl Config {
                     }
                 }
                 ("icon", "metric") => {
-                    if let Some(m) = IconMetric::ALL
-                        .into_iter()
-                        .find(|m| m.name() == v.to_ascii_lowercase())
-                    {
+                    if let Some(m) = IconMetric::parse(v) {
                         c.icon_metric = m;
                     }
                 }
@@ -271,6 +289,13 @@ impl Config {
                 ("appearance", "translucent") => {
                     c.translucent = parse_bool(v).unwrap_or(c.translucent)
                 }
+                ("appearance", "values") => match v.to_ascii_lowercase().as_str() {
+                    "friendly" => c.friendly = true,
+                    "standard" => c.friendly = false,
+                    _ => {}
+                },
+                ("appearance", "explained") => c.explained = parse_bool(v).unwrap_or(c.explained),
+                ("updates", "auto_check") => c.auto_update = parse_bool(v).unwrap_or(c.auto_update),
                 ("notify", "leaks") => c.notify_leaks = parse_bool(v).unwrap_or(c.notify_leaks),
                 ("notify", "warnings") => {
                     c.notify_warnings = parse_bool(v).unwrap_or(c.notify_warnings)
@@ -308,7 +333,17 @@ impl Config {
         s += &format!("exclusions={}\n", self.exclusions.join(";"));
         s += &format!("heavy={}\n", self.heavy.join(";"));
         s += &format!("ignore_leaks={}\n", self.ignore_leaks.join(";"));
-        s += &format!("\n[appearance]\ntranslucent={}\n", b(self.translucent));
+        s += &format!(
+            "\n[appearance]\ntranslucent={}\nvalues={}\nexplained={}\n",
+            b(self.translucent),
+            if self.friendly {
+                "friendly"
+            } else {
+                "standard"
+            },
+            b(self.explained)
+        );
+        s += &format!("\n[updates]\nauto_check={}\n", b(self.auto_update));
         s += &format!(
             "\n[notify]\nleaks={}\nwarnings={}\nresults={}\n",
             b(self.notify_leaks),
@@ -328,6 +363,17 @@ impl Config {
         let tmp = p.with_extension("ini.tmp");
         std::fs::write(&tmp, self.serialize())?;
         std::fs::rename(tmp, p)
+    }
+
+    /// Switches between friendly and Windows-standard values. The icon follows:
+    /// "Ready" pairs with friendly values and "In use" with the standard ones.
+    pub fn set_friendly(&mut self, on: bool) {
+        self.friendly = on;
+        match (on, self.icon_metric) {
+            (false, IconMetric::Ready) => self.icon_metric = IconMetric::Used,
+            (true, IconMetric::Used) => self.icon_metric = IconMetric::Ready,
+            _ => {}
+        }
     }
 
     pub fn is_excluded(&self, image_key: &str) -> bool {
@@ -360,7 +406,29 @@ mod tests {
         c.auto_tiers[3] = false;
         c.exclusions = vec!["game.exe".into(), "obs64.exe".into()];
         c.notify_results = true;
+        c.friendly = false;
+        c.explained = true;
+        c.auto_update = false;
         assert_eq!(Config::parse(&c.serialize()), c);
+    }
+
+    #[test]
+    fn friendly_is_default_and_reversible() {
+        let mut c = Config::default();
+        assert!(c.friendly && c.auto_update && !c.explained);
+        assert_eq!(c.icon_metric, IconMetric::Ready);
+        c.set_friendly(false);
+        assert_eq!(c.icon_metric, IconMetric::Used);
+        c.set_friendly(true);
+        assert_eq!(c.icon_metric, IconMetric::Ready);
+        c.icon_metric = IconMetric::Commit;
+        c.set_friendly(false);
+        assert_eq!(c.icon_metric, IconMetric::Commit);
+        // Old config files said "available" for the same value.
+        assert_eq!(
+            Config::parse("[icon]\nmetric=available\n").icon_metric,
+            IconMetric::Ready
+        );
     }
 
     #[test]

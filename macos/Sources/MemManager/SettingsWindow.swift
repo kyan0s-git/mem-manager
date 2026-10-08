@@ -7,6 +7,7 @@ import SwiftUI
 /// on close so the SwiftUI view graph doesn't stay resident.
 struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject var updater = Updater.shared
     let helper: HelperClient
     let onNudge: () -> Void
     let onPurge: () -> Void
@@ -36,12 +37,26 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Values", selection: $settings.friendlyValues) {
+                    Text("Friendly").tag(true)
+                    Text("Activity Monitor terms").tag(false)
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Values")
+            } footer: {
+                Text(settings.friendlyValues
+                    ? "Leads with memory that's ready for apps and shows cached files as a speed-up. Every number is a real macOS value."
+                    : "Apple's terms, as in Activity Monitor: Memory Used, App, Wired, Compressed and Cached Files.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Menu bar") {
                 Picker("Style", selection: $settings.iconStyle) {
                     ForEach(IconStyle.allCases) { Text($0.label).tag($0) }
                 }
                 Picker("Shows", selection: $settings.iconMetric) {
-                    ForEach(IconMetric.allCases) { Text($0.label).tag($0) }
+                    ForEach(IconMetric.allCases) { Text($0.label(friendly: settings.friendlyValues)).tag($0) }
                 }
                 Picker("Colors", selection: $settings.preset) {
                     ForEach(ColorPreset.allCases) { Text($0.label).tag($0) }
@@ -50,9 +65,10 @@ struct SettingsView: View {
                     Text("State colors")
                     Spacer()
                     ForEach(0..<4, id: \.self) { i in
-                        ColorPicker(PressureState(rawValue: i)!.name, selection: colorBinding(i), supportsOpacity: false)
+                        let name = Presentation.stateName(PressureState(rawValue: i)!, friendly: settings.friendlyValues)
+                        ColorPicker(name, selection: colorBinding(i), supportsOpacity: false)
                             .labelsHidden()
-                            .help(PressureState(rawValue: i)!.name)
+                            .help(name)
                     }
                 }
             }
@@ -96,6 +112,24 @@ struct SettingsView: View {
                 Text("Nudge briefly signals memory pressure so apps drop their caches and purgeable memory is emptied, then always restores the real level. Purge flushes the disk cache — useful for benchmarks, not for speed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section {
+                Toggle("Check for updates automatically", isOn: $settings.autoUpdate)
+                HStack {
+                    Text(updateText).foregroundStyle(.secondary)
+                    Spacer()
+                    if case .available = updater.status {
+                        Button("Install…") { installUpdate() }
+                    } else {
+                        Button("Check now") { updater.check(manual: true) }
+                            .disabled(updater.status.busy)
+                    }
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Updates come from this project's GitHub releases and are checked against their published SHA-256 before installing.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("General") {
                 Toggle("Open at login", isOn: $loginItem)
                     .onChange(of: loginItem) { on in
@@ -117,6 +151,21 @@ struct SettingsView: View {
         } message: {
             Text("Files will be read from disk again the next time apps use them.")
         }
+    }
+
+    private var updateText: String {
+        switch updater.status {
+        case .idle: return "Not checked yet."
+        case .checking: return "Checking…"
+        case let .upToDate(d): return "Up to date · checked \(d.formatted(date: .omitted, time: .shortened))"
+        case let .available(o): return "Version \(o.version) is available."
+        case let .installing(v): return "Installing \(v)…"
+        case let .failed(e): return "Couldn't update: \(e)"
+        }
+    }
+
+    private func installUpdate() {
+        (NSApp.delegate as? AppController)?.installUpdate()
     }
 
     private func refresh() {

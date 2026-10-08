@@ -5,7 +5,9 @@ use super::gfx::{Align, Font, Gfx, Rect};
 use crate::config::{ColorPreset, Config, IconMetric, IconStyle};
 use crate::palette::{Appearance, Palette, Rgba, state_color};
 use crate::shared::Snapshot;
+use crate::update::Status as UpdateStatus;
 use crate::util::{fmt_ago, fmt_bytes, now_ms};
+use crate::values;
 use memmanager_core::profile::Profile;
 use memmanager_core::state::PressureState;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -50,6 +52,11 @@ pub enum Hit {
     RunKey,
     DeepClean,
     EditExclusions,
+    Values(u8),
+    AutoUpdate,
+    CheckUpdate,
+    InstallUpdate,
+    Explainer,
 }
 
 #[derive(Debug)]
@@ -66,7 +73,25 @@ pub enum UiAction {
     EditExclusions,
     SetRunKey(bool),
     Resize,
+    /// "Optimize now" while memory is comfortable: confirm with this explanation first.
+    ConfirmOptimize(String),
+    OpenExplainer,
+    CheckUpdate,
+    InstallUpdate,
 }
+
+/// Optional dashboard lines (friendly values, updates), shared by layout and paint.
+#[derive(Default)]
+struct Extras {
+    update: Option<String>,
+    explainer: bool,
+    room: Option<String>,
+    hits: Option<String>,
+    hint: Option<String>,
+}
+
+const LINE2_H: f32 = 34.0;
+const ROW_H: f32 = 32.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
@@ -96,6 +121,7 @@ pub struct Popup {
     /// A dialog or menu owned by the flyout is open: don't hide on deactivation.
     pub modal: bool,
     backdrop: bool,
+    pub update: UpdateStatus,
 }
 
 /// Windows 11 22H2 (build 22621) or later supports system backdrops.
@@ -138,6 +164,7 @@ impl Popup {
             tracking_mouse: false,
             modal: false,
             backdrop: false,
+            update: UpdateStatus::Idle,
         };
         p.apply_window_style();
         p
@@ -215,9 +242,48 @@ impl Popup {
         }
     }
 
+    fn extras(&self) -> Extras {
+        let snap = &self.snap;
+        let mut e = Extras::default();
+        if let UpdateStatus::Available(o) = &self.update {
+            e.update = Some(format!("MemManager {} is available", o.version));
+        }
+        if !self.cfg.friendly || snap.reading.total == 0 {
+            return e;
+        }
+        e.explainer = !self.cfg.explained;
+        let window = snap.history_split.len().saturating_sub(1) as u64 * 5_000;
+        if let (Some(first), Some(last)) = (snap.history_split.first(), snap.history_split.last()) {
+            e.room =
+                values::room_line(values::room_made(*first, *last, snap.reading.total), window);
+        }
+        e.hits = values::cache_line(snap.cache_hits, snap.disk_reads, snap.hits_window_ms);
+        e.hint = snap
+            .top
+            .iter()
+            .filter(|r| !r.critical)
+            .find_map(|r| values::idle_app_hint(&r.name, r.private, r.idle_min));
+        e
+    }
+
     fn dashboard_height(&self) -> f32 {
         let rows = self.snap.top.len().min(5) as f32;
         let mut h = 280.0 + rows * 32.0 + 8.0;
+        let e = self.extras();
+        if self.cfg.friendly {
+            h += LINE2_H; // cache caption under the breakdown
+        }
+        h += [e.room.is_some(), e.hits.is_some(), e.hint.is_some()]
+            .iter()
+            .filter(|b| **b)
+            .count() as f32
+            * LINE2_H;
+        if e.update.is_some() {
+            h += ROW_H + 4.0;
+        }
+        if e.explainer {
+            h += ROW_H + 4.0;
+        }
         if !self.snap.privileges.profile {
             h += 40.0;
         }
@@ -467,12 +533,28 @@ impl Popup {
                 Some(UiAction::Resize)
             }
             Hit::Pause => Some(UiAction::TogglePause),
-            Hit::Optimize => Some(UiAction::OptimizeNow),
+            Hit::Optimize => Some(
+                match values::optimize_preview(
+                    self.snap.state,
+                    &self.snap.reading.split(),
+                    self.cfg.friendly,
+                ) {
+                    Some(text) => UiAction::ConfirmOptimize(text),
+                    None => UiAction::OptimizeNow,
+                },
+            ),
             Hit::Profile(i) => self.changed(|c| c.profile = Profile::ALL[i as usize]),
             Hit::Proc(pid) => Some(UiAction::ProcMenu(pid)),
             Hit::EnableCleaning => Some(UiAction::EnableCleaning),
             Hit::Style(i) => self.changed(|c| c.icon_style = IconStyle::ALL[i as usize]),
             Hit::Metric(i) => self.changed(|c| c.icon_metric = IconMetric::ALL[i as usize]),
+            Hit::Values(i) => self.changed(|c| c.set_friendly(i == 0)),
+            Hit::AutoUpdate => self.changed(|c| c.auto_update = !c.auto_update),
+            Hit::CheckUpdate => (!self.update.busy()).then_some(UiAction::CheckUpdate),
+            Hit::InstallUpdate => {
+                matches!(self.update, UpdateStatus::Available(_)).then_some(UiAction::InstallUpdate)
+            }
+            Hit::Explainer => Some(UiAction::OpenExplainer),
             Hit::Preset(i) => self.changed(|c| c.preset = ColorPreset::PICKABLE[i as usize]),
             Hit::Swatch(i) => Some(UiAction::PickColor(i)),
             Hit::Tier(i) => self.changed(|c| c.auto_tiers[i as usize] = !c.auto_tiers[i as usize]),
@@ -661,7 +743,15 @@ impl Popup {
         let snap = self.snap.clone();
         let r = &snap.reading;
         let st_col = self.state_col(snap.state);
-        let used = r.used_fraction() as f32;
+        let friendly = self.cfg.friendly;
+        let sp = r.split();
+        let extras = self.extras();
+        // Friendly: the ring fills with app memory only (cache is ready memory).
+        let used = if friendly {
+            sp.apps_fraction()
+        } else {
+            r.used_fraction()
+        } as f32;
 
         // Header: gauge, title, chips, buttons.
         let (cx, cy, rad) = (PAD + 28.0, PAD + 28.0, 24.0);
@@ -685,7 +775,7 @@ impl Popup {
         let tw = g.text_width("Memory", Font::Title);
         let mut chip_x = tx + tw + 8.0;
         let chips: Vec<(String, Rgba)> = {
-            let mut v = vec![(snap.state.name().to_string(), st_col)];
+            let mut v = vec![(values::state_name(snap.state, friendly).to_string(), st_col)];
             if snap.paused {
                 v.push(("Paused".into(), p.text2));
             } else if snap.game_mode {
@@ -700,10 +790,12 @@ impl Popup {
             g.text(&label, cr, Font::CaptionStrong, c, Align::Center);
             chip_x += w + 6.0;
         }
-        let sub = if r.total > 0 {
-            format!("{} of {} in use", fmt_bytes(r.in_use), fmt_bytes(r.total))
-        } else {
+        let sub = if r.total == 0 {
             "Reading memory…".into()
+        } else if friendly {
+            format!("{} ready for apps", fmt_bytes(sp.ready()))
+        } else {
+            format!("{} of {} in use", fmt_bytes(r.in_use), fmt_bytes(r.total))
         };
         g.text(
             &sub,
@@ -712,12 +804,21 @@ impl Popup {
             p.text2,
             Align::Left,
         );
-        let line3 = format!(
-            "Pressure {:.0}% · Commit {:.0}% · Compressed {}",
-            snap.s * 100.0,
-            r.commit_fraction() * 100.0,
-            fmt_bytes(snap.compressed)
-        );
+        let line3 = if friendly {
+            format!(
+                "Apps {} · Speed-up cache {} · of {}",
+                fmt_bytes(sp.apps),
+                fmt_bytes(sp.cache),
+                fmt_bytes(r.total)
+            )
+        } else {
+            format!(
+                "Pressure {:.0}% · Commit {:.0}% · Compressed {}",
+                snap.s * 100.0,
+                r.commit_fraction() * 100.0,
+                fmt_bytes(snap.compressed)
+            )
+        };
         g.text(
             &line3,
             Rect::new(tx, 58.0, W - tx - PAD, 18.0),
@@ -743,19 +844,28 @@ impl Popup {
         g.line(PAD, y, W - PAD, y, p.divider, 1.0);
         y += 14.0;
 
-        // Breakdown bar.
+        // Breakdown bar. Friendly: Apps / Speed-up cache / Free. Standard:
+        // Task Manager's In use / Modified / Standby / Free.
         let total = r.total.max(1) as f32;
         let free = r.total.saturating_sub(r.in_use + r.modified + r.standby);
-        let parts = [
-            (r.in_use, st_col, "In use"),
-            (r.modified, p.seg_modified, "Modified"),
-            (r.standby, p.seg_standby, "Standby"),
-            (free, p.track, "Free"),
-        ];
+        let parts: Vec<(u64, Rgba, &str)> = if friendly {
+            vec![
+                (sp.apps, st_col, "Apps"),
+                (sp.cache, p.seg_standby, "Speed-up cache"),
+                (sp.free, p.track, "Free"),
+            ]
+        } else {
+            vec![
+                (r.in_use, st_col, "In use"),
+                (r.modified, p.seg_modified, "Modified"),
+                (r.standby, p.seg_standby, "Standby"),
+                (free, p.track, "Free"),
+            ]
+        };
         let bar = Rect::new(PAD, y, W - 2.0 * PAD, 8.0);
         g.fill_round(bar, 4.0, p.track);
         let mut x = bar.x;
-        for (bytes, c, _) in parts.iter().take(3) {
+        for (bytes, c, _) in parts.iter().take(parts.len() - 1) {
             let w = bar.w * (*bytes as f32 / total);
             if w >= 1.0 {
                 g.fill_round(Rect::new(x, y, (w - 2.0).max(1.0), 8.0), 4.0, *c);
@@ -778,11 +888,25 @@ impl Popup {
             );
         }
         y += 48.0;
+        if friendly {
+            g.text_wrapped(
+                "Speed-up cache keeps recent files and app data in memory. Windows hands it to apps the moment they need it.",
+                Rect::new(PAD, y - 6.0, W - 2.0 * PAD, LINE2_H),
+                Font::Caption,
+                p.text3,
+            );
+            y += LINE2_H;
+        }
 
-        // Sparkline.
+        // Sparkline. Friendly: app memory with the cache stacked on top, so a
+        // shrinking cache band shows it giving way to apps.
         g.text(
-            "In use · last 10 minutes",
-            Rect::new(PAD, y, 220.0, 16.0),
+            if friendly {
+                "Apps and speed-up cache · last 10 minutes"
+            } else {
+                "In use · last 10 minutes"
+            },
+            Rect::new(PAD, y, W - 2.0 * PAD, 16.0),
             Font::Caption,
             p.text3,
             Align::Left,
@@ -797,10 +921,29 @@ impl Popup {
             p.divider,
             1.0,
         );
-        if snap.history.len() >= 2 {
+        if friendly && snap.history_split.len() >= 2 {
+            let stacked: Vec<f32> = snap.history_split.iter().map(|(a, c)| a + c).collect();
+            let apps: Vec<f32> = snap.history_split.iter().map(|(a, _)| *a).collect();
+            g.sparkline(
+                chart,
+                &stacked,
+                p.seg_standby,
+                p.seg_standby.with_alpha(0.22),
+            );
+            g.sparkline(chart, &apps, st_col, st_col.with_alpha(0.30));
+        } else if !friendly && snap.history.len() >= 2 {
             g.sparkline(chart, &snap.history, st_col, st_col.with_alpha(0.14));
         }
         y += 52.0;
+        for line in [&extras.room, &extras.hits].into_iter().flatten() {
+            g.text_wrapped(
+                line,
+                Rect::new(PAD, y - 4.0, W - 2.0 * PAD, LINE2_H),
+                Font::Caption,
+                p.text2,
+            );
+            y += LINE2_H;
+        }
         g.line(PAD, y, W - PAD, y, p.divider, 1.0);
         y += 10.0;
 
@@ -849,6 +992,8 @@ impl Popup {
                 ("growing fast".to_string(), p.warn)
             } else if row.slope_mib_h >= 30.0 {
                 (format!("\u{2197} {:.0} MB/h", row.slope_mib_h), p.text3)
+            } else if friendly && row.idle_min >= 60.0 && !row.critical {
+                (format!("idle {}", values::fmt_idle(row.idle_min)), p.text3)
             } else if row.lowered {
                 ("low priority".to_string(), p.text3)
             } else {
@@ -869,6 +1014,29 @@ impl Popup {
         y += 4.0;
         g.line(PAD, y, W - PAD, y, p.divider, 1.0);
         y += 10.0;
+
+        // Update available, the one-time explainer, an idle app worth closing.
+        if let Some(text) = &extras.update {
+            self.link_row(g, &mut y, text, "Install \u{2192}", Hit::InstallUpdate);
+        }
+        if extras.explainer {
+            self.link_row(
+                g,
+                &mut y,
+                "Cache now counts as ready memory.",
+                "Why? \u{2192}",
+                Hit::Explainer,
+            );
+        }
+        if let Some(hint) = &extras.hint {
+            g.text_wrapped(
+                hint,
+                Rect::new(PAD, y - 2.0, W - 2.0 * PAD, LINE2_H),
+                Font::Caption,
+                p.text2,
+            );
+            y += LINE2_H;
+        }
 
         // Notes: pool leak, privileges.
         if let Some(note) = &snap.pool_note {
@@ -934,6 +1102,17 @@ impl Popup {
                     ),
                 )
             }
+            None if friendly => (
+                if snap.state == PressureState::Normal {
+                    format!(
+                        "Nothing to clean: {} ready for apps.",
+                        fmt_bytes(sp.ready())
+                    )
+                } else {
+                    "Watching memory pressure…".into()
+                },
+                "MemManager steps in on its own if memory gets tight.".into(),
+            ),
             None => (
                 if snap.state == PressureState::Normal {
                     "Memory is healthy."
@@ -984,6 +1163,30 @@ impl Popup {
             sel,
             Hit::Profile,
         );
+    }
+
+    /// A full-width clickable row: text on the left, an accent link on the right.
+    fn link_row(&mut self, g: &Gfx, y: &mut f32, text: &str, link: &str, hit: Hit) {
+        let rr = Rect::new(PAD - 6.0, *y, W - 2.0 * PAD + 12.0, ROW_H);
+        if self.hovered(hit) {
+            g.fill_round(rr, 6.0, self.pal.control_hover);
+        }
+        g.text(
+            text,
+            Rect::new(PAD, *y, W - 2.0 * PAD - 90.0, ROW_H),
+            Font::Caption,
+            self.pal.text2,
+            Align::Left,
+        );
+        g.text(
+            link,
+            Rect::new(W - PAD - 90.0, *y, 90.0, ROW_H),
+            Font::CaptionStrong,
+            self.pal.accent,
+            Align::Right,
+        );
+        self.hits.push((rr, hit));
+        *y += ROW_H + 4.0;
     }
 
     fn section(&self, g: &Gfx, y: &mut f32, title: &str) {
@@ -1037,6 +1240,26 @@ impl Popup {
         let top = HEADER_H - self.scroll;
         let mut y = top;
 
+        self.section(g, &mut y, "VALUES");
+        self.segmented(
+            g,
+            Rect::new(PAD, y, W - 2.0 * PAD, 32.0),
+            &["Friendly", "Windows standard"],
+            if cfg.friendly { 0 } else { 1 },
+            Hit::Values,
+        );
+        y += 40.0;
+        y += g.text_wrapped(
+            if cfg.friendly {
+                "Leads with memory that's ready for apps and shows cache as a speed-up. Every number is a real Windows value."
+            } else {
+                "Task Manager's terms: In use, Modified, Standby, Free and Available."
+            },
+            Rect::new(PAD, y, W - 2.0 * PAD, 40.0),
+            Font::Caption,
+            p.text3,
+        ) + 8.0;
+
         self.section(g, &mut y, "TRAY ICON");
         g.text(
             "Style",
@@ -1065,7 +1288,10 @@ impl Popup {
             p.text,
             Align::Left,
         );
-        let metrics: Vec<&str> = IconMetric::ALL.iter().map(|m| m.label()).collect();
+        let metrics: Vec<&str> = IconMetric::ALL
+            .iter()
+            .map(|m| m.label(cfg.friendly))
+            .collect();
         let mi = IconMetric::ALL
             .iter()
             .position(|m| *m == cfg.icon_metric)
@@ -1100,36 +1326,34 @@ impl Popup {
         y += 38.0;
         g.text(
             "State colors",
-            Rect::new(PAD, y, 100.0, 30.0),
+            Rect::new(PAD, y, 200.0, 30.0),
             Font::Body,
             p.text,
             Align::Left,
         );
+        y += 30.0;
         let tb = Appearance {
             taskbar_light: self.ap.taskbar_light,
             ..self.ap
         };
+        let sw = (W - 2.0 * PAD) / 4.0;
         for (i, st) in PressureState::ALL.iter().enumerate() {
-            let sr = Rect::new(124.0 + i as f32 * 56.0, y, 48.0, 30.0);
+            let sr = Rect::new(PAD + i as f32 * sw, y, sw, 30.0);
             let c = state_color(cfg.preset, &cfg.custom_colors, *st, &tb);
             let hit = Hit::Swatch(i as u8);
             if self.hovered(hit) {
                 g.fill_round(sr.inset(-2.0), 8.0, p.control_hover);
             }
-            g.fill_round(Rect::new(sr.x + 14.0, sr.y + 2.0, 20.0, 20.0), 5.0, c);
-            g.stroke_round(
-                Rect::new(sr.x + 14.0, sr.y + 2.0, 20.0, 20.0),
-                5.0,
-                p.border,
-                1.0,
-            );
+            let dot = Rect::new(sr.x + (sw - 20.0) / 2.0, sr.y + 2.0, 20.0, 20.0);
+            g.fill_round(dot, 5.0, c);
+            g.stroke_round(dot, 5.0, p.border, 1.0);
             self.hits.push((sr, hit));
         }
         y += 26.0;
         for (i, st) in PressureState::ALL.iter().enumerate() {
             g.text(
-                st.name(),
-                Rect::new(124.0 + i as f32 * 56.0, y, 48.0, 14.0),
+                values::state_name(*st, cfg.friendly),
+                Rect::new(PAD + i as f32 * sw, y, sw, 14.0),
                 Font::Caption,
                 p.text3,
                 Align::Center,
@@ -1138,7 +1362,7 @@ impl Popup {
         y += 18.0;
         g.text(
             "Click a color to customize it.",
-            Rect::new(124.0, y, W - PAD - 124.0, 16.0),
+            Rect::new(PAD, y, W - 2.0 * PAD, 16.0),
             Font::Caption,
             p.text3,
             Align::Left,
@@ -1298,6 +1522,61 @@ impl Popup {
         y += 34.0;
         y += g.text_wrapped(
             "Empties every working set and cache at once. Expect a short slowdown while apps page back in.",
+            Rect::new(PAD, y, W - 2.0 * PAD, 40.0),
+            Font::Caption,
+            p.text3,
+        ) + 8.0;
+
+        self.section(g, &mut y, "UPDATES");
+        self.toggle_row(
+            g,
+            &mut y,
+            "Check for updates automatically",
+            cfg.auto_update,
+            Hit::AutoUpdate,
+        );
+        let (status, btn, hit) = match &self.update {
+            UpdateStatus::Idle => (
+                "Not checked yet.".to_string(),
+                "Check now",
+                Hit::CheckUpdate,
+            ),
+            UpdateStatus::Checking => ("Checking…".to_string(), "Check now", Hit::CheckUpdate),
+            UpdateStatus::UpToDate { at_ms } => (
+                format!(
+                    "Up to date · checked {}",
+                    fmt_ago(now_ms().saturating_sub(*at_ms))
+                ),
+                "Check now",
+                Hit::CheckUpdate,
+            ),
+            UpdateStatus::Available(o) => (
+                format!("Version {} is available.", o.version),
+                "Install",
+                Hit::InstallUpdate,
+            ),
+            UpdateStatus::Installing(v) => {
+                (format!("Installing {v}…"), "Check now", Hit::CheckUpdate)
+            }
+            UpdateStatus::Failed(e) => (
+                format!("Couldn't update: {e}"),
+                "Try again",
+                Hit::CheckUpdate,
+            ),
+        };
+        y += g
+            .text_wrapped(
+                &status,
+                Rect::new(PAD, y + 6.0, W - 2.0 * PAD - 112.0, 40.0),
+                Font::Caption,
+                p.text2,
+            )
+            .max(30.0)
+            - 30.0;
+        self.secondary_button(g, Rect::new(W - PAD - 104.0, y, 104.0, 30.0), btn, hit);
+        y += 38.0;
+        y += g.text_wrapped(
+            "Updates come from this project's GitHub releases and are checked against their published SHA-256 before installing.",
             Rect::new(PAD, y, W - 2.0 * PAD, 40.0),
             Font::Caption,
             p.text3,

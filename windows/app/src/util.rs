@@ -36,23 +36,7 @@ pub fn now_ms() -> u64 {
     unsafe { GetTickCount64() }
 }
 
-/// "1.4 GB", "820 MB", "12 KB" (binary units, Windows-style labels).
-pub fn fmt_bytes(b: u64) -> String {
-    const K: f64 = 1024.0;
-    let b = b as f64;
-    if b >= K * K * K {
-        let g = b / (K * K * K);
-        if g >= 100.0 {
-            format!("{g:.0} GB")
-        } else {
-            format!("{g:.1} GB")
-        }
-    } else if b >= K * K {
-        format!("{:.0} MB", b / (K * K))
-    } else {
-        format!("{:.0} KB", b / K)
-    }
-}
+pub use crate::values::fmt_bytes;
 
 /// "4 min ago", "2 h ago", "just now".
 pub fn fmt_ago(ms: u64) -> String {

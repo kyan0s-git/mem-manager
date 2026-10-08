@@ -20,6 +20,19 @@ Two native memory managers, one per OS, built on the same measured policy engine
 
 ## What it does
 
+### On both
+- **Friendly values (default):** the dashboard leads with memory that's **ready for apps**. The
+  cache is shown as a speed-up that's handed to apps instantly, not as memory in use. Calm state
+  names: Comfortable, Busy, Tight, Critical. Every number is a real OS value, and **Settings →
+  Values** switches back to Task Manager or Activity Monitor terms
+  ([why](docs/understanding-memory.md)).
+- **Honest cleaning:** while memory is comfortable, a manual clean first says what it would cost
+  and that it won't make anything faster. Idle apps holding real memory are pointed out instead.
+- **In-app updates:**
+  - Checks GitHub releases daily (or on demand).
+  - Verifies the download's SHA-256.
+  - Installs in place and restarts with your settings; no re-downloading.
+
 ### Windows
 - **Tier 1:** lowers the memory priority of idle background apps, so their pages are recycled
   first.
@@ -114,6 +127,7 @@ Every CI run on the branch uploads the same packages (version `0.0.0`) under **A
 - [macOS architecture](docs/architecture/macos.md)
 - [UI design](docs/architecture/ui-design.md)
 - [Resource budget](docs/architecture/resource-budget.md)
+- [Why "ready for apps" counts the cache](docs/understanding-memory.md)
 
 ## Repository layout
 

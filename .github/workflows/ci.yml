@@ -71,6 +71,16 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList '--selftest=20','--out=selftest.json' -Wait -PassThru
           Get-Content selftest.json
           if ($p.ExitCode -ne 0) { throw "selftest exited with $($p.ExitCode)" }
+      - name: In-app update against the real releases (download + checksum, no install)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--check-update','--pretend-version=0.0.1','--as-installed','--download','--out=update.json' -Wait -PassThru
+          Get-Content update.json
+          $j = Get-Content update.json | ConvertFrom-Json
+          if ($j.error -match 'rate-limit') { "::warning::GitHub API rate limit reached; update check skipped"; exit 0 }
+          if ($p.ExitCode -ne 0 -or -not $j.verified) { throw "update check failed" }
       - name: Benchmark (realistic bloat)
         if: matrix.target == 'x86_64-pc-windows-msvc'
         continue-on-error: true
@@ -119,6 +129,15 @@ jobs:
         run: |
           ./.build/release/MemManager --selftest=10 --out=selftest.json
           cat selftest.json
+      - name: In-app update against the real releases (download + checksum, no install)
+        working-directory: macos
+        run: |
+          set +e
+          ./.build/release/MemManager --check-update --pretend-version=0.0.1 --download --out=update.json
+          code=$?
+          cat update.json; echo
+          if grep -q rate-limit update.json; then echo "::warning::GitHub API rate limit reached; update check skipped"; exit 0; fi
+          [ "$code" -eq 0 ] && grep -q '"verified":true' update.json
       - name: Benchmark (realistic bloat, as root)
         working-directory: macos
         continue-on-error: true

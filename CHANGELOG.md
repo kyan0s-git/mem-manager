@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Both platforms
+- **Friendly values, on by default.**
+  - The dashboard and icon lead with memory that's *ready for apps* (free plus cache), show the
+    cache as a "speed-up cache", and use calm state names.
+  - **Settings → Values** returns to the OS's own terms: Task Manager on Windows, Activity
+    Monitor on macOS.
+- **The cache earning its keep:**
+  - "Cache made room for 1.2 GB of app memory in the last 10 minutes."
+  - On Windows: how often apps got data back from cache instead of disk.
+- **Honest manual cleaning:** while memory is comfortable, "Optimize now" (Windows) and "Nudge"
+  (macOS) first explain what they would cost.
+- **Idle apps holding real memory** are called out in the app list.
+- **One-time explainer link:** [docs/understanding-memory.md](docs/understanding-memory.md).
+- **In-app updates:**
+  - Daily automatic check (can be turned off) or "Check now".
+  - The download is verified against its published SHA-256, then installed in place.
+    - Windows: a silent setup upgrade, or an exe swap for portable copies.
+    - macOS: a bundle swap.
+  - The app restarts with your settings.
+- Releases also publish raw `MemManager-<ver>-windows-<arch>.exe` assets for portable updates.
+
 ## v0.1.0 — first pre-release
 
 ### Windows (tray app, Rust + Win32 + Direct2D)

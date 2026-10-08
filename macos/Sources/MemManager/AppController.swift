@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import MemCore
 import MemShared
 
@@ -14,6 +15,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let settingsWindow = SettingsWindowController()
     private var lastSnapshot = Snapshot()
     private var selfPressure: DispatchSourceMemoryPressure?
+    private var updateSub: AnyCancellable?
+    static let explainerURL = URL(string: "https://github.com/kyan0s-git/mem-manager/blob/HEAD/docs/understanding-memory.md")!
 
     override init() {
         engine = Engine(settings: AppSettings.shared.engine)
@@ -66,6 +69,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         selfPressure = src
         refreshHelperCache()
         engine.start()
+
+        let updater = Updater.shared
+        updater.onFound = { [weak self] o in
+            self?.notifier.post(title: "MemManager \(o.version) is available",
+                                body: "Open MemManager to install it. It takes a few seconds and keeps your settings.")
+        }
+        updateSub = updater.$status.receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self else { return }
+            self.render(self.lastSnapshot)
+        }
+        updater.schedule { AppSettings.shared.autoUpdate }
     }
 
     private var helperInstalledCache = false
@@ -122,7 +136,37 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func nudge() {
         refreshHelperCache()
         guard helperInstalledCache else { showSettings(); return }
+        // While memory is comfortable, explain what a Nudge would cost first.
+        if let text = Presentation.nudgePreview(lastSnapshot.state, split: lastSnapshot.reading.split,
+                                                friendly: settings.friendlyValues) {
+            popover?.performClose(nil)
+            let a = NSAlert()
+            a.messageText = "Nudge anyway?"
+            a.informativeText = text
+            a.addButton(withTitle: "Nudge")
+            a.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
         engine.nudgeNow()
+    }
+
+    func openExplainer() {
+        settings.explained = true
+        popover?.performClose(nil)
+        NSWorkspace.shared.open(AppController.explainerURL)
+    }
+
+    func installUpdate() {
+        guard case let .available(o) = Updater.shared.status else { return }
+        popover?.performClose(nil)
+        let a = NSAlert()
+        a.messageText = "Install MemManager \(o.version)?"
+        a.informativeText = "MemManager downloads the update, checks it against its published SHA-256, replaces itself and opens again with your settings."
+        a.addButton(withTitle: "Install")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn { Updater.shared.install() }
     }
 
     func purge() {
@@ -201,6 +245,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         profileItem.submenu = profiles
         menu.addItem(profileItem)
         menu.addItem(.separator())
+        if case let .available(o) = Updater.shared.status {
+            menu.addItem(ClosureMenuItem("Install MemManager \(o.version)…") { [weak self] in self?.installUpdate() })
+        } else {
+            menu.addItem(ClosureMenuItem("Check for Updates") { Updater.shared.check(manual: true) })
+        }
         menu.addItem(ClosureMenuItem("Settings…") { [weak self] in self?.showSettings() })
         menu.addItem(ClosureMenuItem("Quit MemManager") { NSApp.terminate(nil) })
         statusItem.item.menu = menu

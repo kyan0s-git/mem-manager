@@ -23,6 +23,8 @@ struct MacReading: Equatable {
     var swapoutRate: Double = 0
 
     var usedFraction: Double { total > 0 ? Double(used) / Double(total) : 0 }
+    /// Apps & macOS / speed-up cache (Cached Files) / free.
+    var split: MemorySplit { MemorySplit(total: total, used: used, cached: cached) }
     var kernelLevelName: String {
         switch kernelLevel {
         case 4: return "Critical"
@@ -95,13 +97,7 @@ func monotonicMs() -> UInt64 {
     DispatchTime.now().uptimeNanoseconds / 1_000_000
 }
 
-func fmtBytes(_ b: UInt64) -> String {
-    let d = Double(b)
-    let g = d / 1_073_741_824
-    if g >= 100 { return String(format: "%.0f GB", g) }
-    if g >= 1 { return String(format: "%.1f GB", g) }
-    return String(format: "%.0f MB", d / 1_048_576)
-}
+func fmtBytes(_ b: UInt64) -> String { Presentation.bytes(b) }
 
 func fmtAgo(_ ms: UInt64) -> String {
     let s = ms / 1000

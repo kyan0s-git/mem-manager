@@ -32,6 +32,9 @@ use windows::Win32::System::Threading::{
 
 const MIB: u64 = 1 << 20;
 const HISTORY_EVERY_MS: u64 = 5_000;
+/// Cache-hit counters are kept per minute for the last hour.
+const HITS_EVERY_MS: u64 = 60_000;
+const HITS_KEEP: usize = 61;
 const LOW_MEM_SUPPRESS_MS: u64 = 30_000;
 const ACTING_MS: u64 = 1_500;
 const COMMIT_WARN_FRACTION: f64 = 0.90;
@@ -70,7 +73,11 @@ pub struct Engine {
     pub last: SysReading,
     pub last_p: f64,
     history: Ring<f32, 120>,
+    /// (apps, cache) fractions, same cadence as `history`.
+    history_split: Ring<(f32, f32), 120>,
     last_history_ms: u64,
+    /// (t, cache hits, disk reads) running counters, one per minute.
+    hits_marks: VecDeque<(u64, u64, u64)>,
     pub privileges: Privileges,
     pub caps: Caps,
     paused_until: Option<u64>,
@@ -105,7 +112,9 @@ impl Engine {
             last: SysReading::default(),
             last_p: 0.0,
             history: Ring::new(),
+            history_split: Ring::new(),
             last_history_ms: 0,
+            hits_marks: VecDeque::new(),
             privileges,
             caps: Caps {
                 mem_commands: privileges.profile,
@@ -274,7 +283,21 @@ impl Engine {
         if self.last_history_ms == 0 || now.saturating_sub(self.last_history_ms) >= HISTORY_EVERY_MS
         {
             self.history.push(r.used_fraction() as f32);
+            let sp = r.split();
+            self.history_split
+                .push((sp.apps_fraction() as f32, sp.cache_fraction() as f32));
             self.last_history_ms = now;
+        }
+        if self
+            .hits_marks
+            .back()
+            .is_none_or(|m| now.saturating_sub(m.0) >= HITS_EVERY_MS)
+        {
+            self.hits_marks
+                .push_back((now, r.cache_hits_cum, r.disk_reads_cum));
+            while self.hits_marks.len() > HITS_KEEP {
+                self.hits_marks.pop_front();
+            }
         }
         self.game_mode = self.cfg.game_mode && wa::game_mode_active();
 
@@ -601,6 +624,7 @@ impl Engine {
 
     pub fn snapshot(&mut self, now: u64) -> Snapshot {
         let (self_private, self_ws) = self_memory();
+        let hits0 = self.hits_marks.front().copied().unwrap_or((now, 0, 0));
         let top = self
             .procs
             .top(6)
@@ -620,6 +644,7 @@ impl Engine {
                 runaway: p.leak.runaway,
                 lowered: self.lowered.contains(p.pid),
                 critical: p.is_critical(),
+                idle_min: p.idle_minutes(now),
             })
             .collect();
         let ledger = self
@@ -650,6 +675,10 @@ impl Engine {
             s: self.sm.smoothed(),
             state: self.sm.state(),
             history: self.history.iter().collect(),
+            history_split: self.history_split.iter().collect(),
+            cache_hits: self.last.cache_hits_cum.saturating_sub(hits0.1),
+            disk_reads: self.last.disk_reads_cum.saturating_sub(hits0.2),
+            hits_window_ms: now.saturating_sub(hits0.0),
             top,
             ledger,
             privileges: self.privileges,

@@ -18,12 +18,13 @@ enum IconStyle: String, CaseIterable, Identifiable {
 }
 
 enum IconMetric: String, CaseIterable, Identifiable {
-    case pressure, used, compressed
+    case pressure, ready, used, compressed
     var id: String { rawValue }
-    var label: String {
+    func label(friendly: Bool) -> String {
         switch self {
         case .pressure: return "Pressure"
-        case .used: return "Memory used"
+        case .ready: return friendly ? "Ready for apps" : "Free + cached"
+        case .used: return friendly ? "Apps & macOS" : "Memory used"
         case .compressed: return "Compressed"
         }
     }
@@ -75,6 +76,13 @@ final class AppSettings: ObservableObject {
     @Published var ignoreLeaks: [String] = [] { didSet { save() } }
     @Published var autoQuit: [String] = [] { didSet { save() } }
     @Published var heavy: [String] = AppSettings.defaultHeavy { didSet { save() } }
+    /// Friendly values (default): "ready for apps", cache shown as a speed-up, calm
+    /// state names. Off: Activity Monitor's terms (Memory Used, Cached Files, …).
+    @Published var friendlyValues = true { didSet { save() } }
+    /// The one-time "why cache counts as ready" note has been seen.
+    @Published var explained = false { didSet { save() } }
+    /// Check GitHub for a newer release once a day.
+    @Published var autoUpdate = true { didSet { save() } }
 
     static let defaultHeavy = [
         "safari", "google chrome", "firefox", "arc", "microsoft edge", "brave browser", "opera", "vivaldi",
@@ -97,6 +105,9 @@ final class AppSettings: ObservableObject {
         ignoreLeaks = d.stringArray(forKey: "ignoreLeaks") ?? []
         autoQuit = d.stringArray(forKey: "autoQuit") ?? []
         heavy = d.stringArray(forKey: "heavy") ?? AppSettings.defaultHeavy
+        if d.object(forKey: "friendlyValues") != nil { friendlyValues = d.bool(forKey: "friendlyValues") }
+        explained = d.bool(forKey: "explained")
+        if d.object(forKey: "autoUpdate") != nil { autoUpdate = d.bool(forKey: "autoUpdate") }
         loading = false
     }
 
@@ -113,6 +124,9 @@ final class AppSettings: ObservableObject {
         d.set(ignoreLeaks, forKey: "ignoreLeaks")
         d.set(autoQuit, forKey: "autoQuit")
         d.set(heavy, forKey: "heavy")
+        d.set(friendlyValues, forKey: "friendlyValues")
+        d.set(explained, forKey: "explained")
+        d.set(autoUpdate, forKey: "autoUpdate")
         onChange?()
     }
 

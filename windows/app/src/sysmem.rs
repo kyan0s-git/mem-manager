@@ -27,11 +27,20 @@ pub struct SysReading {
     pub low_repurpose_rate: f64,
     /// Hard faults per second (pages read from disk).
     pub hard_fault_rate: f64,
+    /// Running count of page faults answered from the standby/modified lists
+    /// ("transition faults": data came back from memory instead of disk).
+    pub cache_hits_cum: u64,
+    /// Running count of pages read from disk.
+    pub disk_reads_cum: u64,
     pub paged_pool_pages: u32,
     pub nonpaged_pool_pages: u32,
 }
 
 impl SysReading {
+    /// Apps / speed-up cache / free (values.rs).
+    pub fn split(&self) -> crate::values::Split {
+        crate::values::Split::new(self.total, self.standby, self.free_zero)
+    }
     pub fn used_fraction(&self) -> f64 {
         self.in_use as f64 / self.total.max(1) as f64
     }
@@ -44,7 +53,9 @@ impl SysReading {
 pub struct SysSampler {
     page_size: u64,
     hard_cum: u64,
+    hits_cum: u64,
     last_page_read: Option<u32>,
+    last_transition: Option<u32>,
     last_low_repurposed: Option<u64>,
     last_t: u64,
     pub lists_ok: Option<bool>,
@@ -135,10 +146,16 @@ impl SysSampler {
                 }
             }
             self.last_page_read = Some(p.page_read_count);
+            if let Some(prev) = self.last_transition {
+                self.hits_cum += p.transition_count.wrapping_sub(prev) as u64;
+            }
+            self.last_transition = Some(p.transition_count);
             r.paged_pool_pages = p.paged_pool_pages;
             r.nonpaged_pool_pages = p.non_paged_pool_pages;
         }
         self.last_t = t_ms;
+        r.cache_hits_cum = self.hits_cum;
+        r.disk_reads_cum = self.hard_cum;
 
         let fast_avail = if r.has_lists {
             r.free_zero + r.standby_prio0

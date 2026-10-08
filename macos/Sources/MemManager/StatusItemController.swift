@@ -27,9 +27,15 @@ final class StatusItemController {
         }
     }
 
-    static func value(_ snap: Snapshot, metric: IconMetric) -> (Double, String) {
+    static func value(_ snap: Snapshot, metric: IconMetric, friendly: Bool) -> (Double, String) {
         let r = snap.reading
         switch metric {
+        case .ready:
+            // Friendly: the ring fills with app memory only, so a full cache never looks full.
+            let sp = r.split
+            let gb = Double(sp.ready) / 1_073_741_824
+            let f = friendly ? sp.appsFraction : (r.total > 0 ? Double(sp.ready) / Double(r.total) : 0)
+            return (f, gb >= 10 ? String(format: "%.0fG", gb) : String(format: "%.1fG", gb))
         case .pressure:
             return (snap.s, "\(Int((snap.s * 100).rounded()))%")
         case .used:
@@ -44,7 +50,7 @@ final class StatusItemController {
     func update(_ snap: Snapshot, settings: AppSettings) {
         guard let button = item.button else { return }
         let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let (frac, text) = StatusItemController.value(snap, metric: settings.iconMetric)
+        let (frac, text) = StatusItemController.value(snap, metric: settings.iconMetric, friendly: settings.friendlyValues)
         var color = Palette.stateColor(snap.state, preset: settings.preset, custom: settings.customColors, dark: dark)
         if snap.acting { color = .controlAccentColor }
         let spec = IconSpec(
@@ -63,8 +69,11 @@ final class StatusItemController {
             button.image = IconRenderer.image(spec)
         }
         let r = snap.reading
-        let tip = String(format: "Memory pressure %@ · %.0f%% used · %@ compressed · swap %@",
-                         snap.state.name, r.usedFraction * 100, fmtBytes(r.compressed), fmtBytes(r.swapUsed))
+        let sp = r.split
+        let tip = settings.friendlyValues
+            ? "\(fmtBytes(sp.ready)) ready for apps · \(Presentation.stateName(snap.state, friendly: true)) · Apps & macOS \(fmtBytes(sp.apps)) · Speed-up cache \(fmtBytes(sp.cache))"
+            : String(format: "Memory pressure %@ · %.0f%% used · %@ compressed · swap %@",
+                     snap.state.name, r.usedFraction * 100, fmtBytes(r.compressed), fmtBytes(r.swapUsed))
         if button.toolTip != tip {
             button.toolTip = tip
             button.setAccessibilityValue(tip)

@@ -4,7 +4,7 @@ use crate::config::{Config, IconMetric, IconStyle};
 use crate::icon::{self, Canvas, IconSpec};
 use crate::palette::{Appearance, Rgba, state_color};
 use crate::shared::Snapshot;
-use crate::util::{WStr, copy_to_fixed, fmt_bytes};
+use crate::util::{WStr, copy_to_fixed};
 use memmanager_core::state::PressureState;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -255,26 +255,38 @@ pub fn render_icon(size: usize, text: &str, spec: &IconSpec, metric: IconMetric)
 }
 
 /// What the icon shows for a snapshot: (fraction for ring/bar, text for number).
-pub fn icon_value(snap: &Snapshot, metric: IconMetric) -> (f32, String) {
+/// With friendly values the ring always fills with app memory only, so a full
+/// cache never makes the icon look full; standard values keep Task Manager's.
+pub fn icon_value(snap: &Snapshot, metric: IconMetric, friendly: bool) -> (f32, String) {
     let r = &snap.reading;
+    let sp = r.split();
+    let pct = |f: f32| format!("{}", (f * 100.0).round() as u32);
     match metric {
         IconMetric::Used => {
-            let f = r.used_fraction() as f32;
-            (f, format!("{}", (f * 100.0).round() as u32))
+            let f = if friendly {
+                sp.apps_fraction()
+            } else {
+                r.used_fraction()
+            } as f32;
+            (f, pct(f))
         }
         IconMetric::Commit => {
             let f = r.commit_fraction() as f32;
-            (f, format!("{}", (f * 100.0).round() as u32))
+            (f, pct(f))
         }
-        IconMetric::Available => {
-            let avail = r.free_zero + r.standby;
-            let gb = avail as f64 / (1u64 << 30) as f64;
+        IconMetric::Ready => {
+            let gb = sp.ready() as f64 / (1u64 << 30) as f64;
             let text = if gb >= 10.0 {
                 format!("{}", gb.round() as u32)
             } else {
                 format!("{gb:.1}")
             };
-            ((avail as f64 / r.total.max(1) as f64) as f32, text)
+            let f = if friendly {
+                sp.apps_fraction()
+            } else {
+                sp.ready() as f64 / r.total.max(1) as f64
+            };
+            (f as f32, text)
         }
     }
 }
@@ -373,7 +385,7 @@ impl Tray {
     pub fn update(&mut self, snap: &Snapshot, cfg: &Config, ap: &Appearance) {
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
         let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) }.clamp(16, 64) as usize;
-        let (frac, text) = icon_value(snap, cfg.icon_metric);
+        let (frac, text) = icon_value(snap, cfg.icon_metric, cfg.friendly);
         let state = snap.state;
         let color = if snap.acting {
             ap.accent.mix(
@@ -405,7 +417,7 @@ impl Tray {
             limited,
             acting: snap.acting,
         };
-        let tip = tooltip(snap);
+        let tip = tooltip(snap, cfg.friendly);
         let icon_changed = self.key.as_ref() != Some(&key);
         if !icon_changed && tip == self.tip && self.added {
             return;
@@ -475,17 +487,17 @@ impl Tray {
     }
 }
 
-pub fn tooltip(snap: &Snapshot) -> String {
+pub fn tooltip(snap: &Snapshot, friendly: bool) -> String {
     let r = &snap.reading;
     if r.total == 0 {
         return "MemManager".into();
     }
-    let mut s = format!(
-        "Memory {:.0}% in use · {}\nCommit {:.0}% · {} free",
-        r.used_fraction() * 100.0,
-        snap.state.name(),
+    let mut s = crate::values::tooltip(
+        friendly,
+        snap.state,
+        &r.split(),
+        r.in_use,
         r.commit_fraction() * 100.0,
-        fmt_bytes(r.free_zero + r.standby)
     );
     if snap.paused {
         s.push_str("\nPaused");

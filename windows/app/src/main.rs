@@ -6,6 +6,8 @@
 mod config;
 mod icon;
 mod palette;
+mod update;
+mod values;
 
 #[cfg(windows)]
 mod app;
@@ -31,6 +33,8 @@ mod task;
 mod tray;
 #[cfg(windows)]
 mod ui;
+#[cfg(windows)]
+mod updater;
 #[cfg(windows)]
 mod util;
 #[cfg(windows)]
@@ -70,11 +74,30 @@ fn main() {
             .find_map(|a| a.strip_prefix("--out=").map(str::to_string));
         std::process::exit(bench::run(out));
     }
+    if has("--check-update") {
+        let pretend = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--pretend-version="));
+        let out = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--out=").map(str::to_string));
+        std::process::exit(updater::cli(
+            pretend,
+            has("--as-installed"),
+            has("--download"),
+            out,
+        ));
+    }
     if has("--register-task") {
         std::process::exit(app::register_task(has("--launch")));
     }
     if has("--unregister-task") {
         std::process::exit(task::unregister());
+    }
+    if has("--after-update") {
+        updater::after_update();
+    } else {
+        updater::cleanup();
     }
     let privileges = privilege::enable_all();
     std::process::exit(app::run(privileges));

@@ -31,6 +31,9 @@ struct Snapshot: Equatable {
     var s = 0.0
     var state: PressureState = .normal
     var history: [Double] = []
+    /// App and cache fractions at the same points as `history`.
+    var historyApps: [Double] = []
+    var historyCache: [Double] = []
     var apps: [AppRow] = []
     var idleHeavy: [AppRow] = []
     var ledger: [LedgerRow] = []
@@ -74,6 +77,8 @@ final class Engine {
     private var regret: RegretTracker
     private var ledger = Ring<LedgerEntry>(capacity: 64)
     private var history = Ring<Double>(capacity: 120)
+    private var historyApps = Ring<Double>(capacity: 120)
+    private var historyCache = Ring<Double>(capacity: 120)
     private var lastHistoryMs: UInt64 = 0
     private var prevSample: Sample?
     private(set) var last = MacReading()
@@ -200,6 +205,9 @@ final class Engine {
         last = r
         if lastHistoryMs == 0 || now &- lastHistoryMs >= 5_000 {
             history.push(r.usedFraction)
+            let sp = r.split
+            historyApps.push(sp.appsFraction)
+            historyCache.push(sp.cacheFraction)
             lastHistoryMs = now
         }
         if state >= .elevated {
@@ -346,6 +354,8 @@ final class Engine {
         s.s = sm.smoothed
         s.state = sm.state
         s.history = history.elements
+        s.historyApps = historyApps.elements
+        s.historyCache = historyCache.elements
         s.apps = procs.top(6).map { g in
             var r = Engine.row(g)
             if settings.ignores(g.name) { r.leak = false }
@@ -375,6 +385,8 @@ final class Engine {
     func trimSelf() {
         queue.async {
             self.history.truncateOldest(keep: 24)
+            self.historyApps.truncateOldest(keep: 24)
+            self.historyCache.truncateOldest(keep: 24)
             self.swapHist.truncateOldest(keep: 8)
         }
     }

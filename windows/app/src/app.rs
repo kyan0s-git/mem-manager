@@ -4,10 +4,15 @@
 use crate::config::{ColorPreset, Config};
 use crate::palette::{Appearance, state_color};
 use crate::privilege::Privileges;
-use crate::shared::{Command, Notice, ProcActionKind, Shared, WM_APP_NOTICE, WM_APP_SNAPSHOT};
+use crate::shared::{
+    Command, Notice, ProcActionKind, Shared, WM_APP_EXIT_FOR_UPDATE, WM_APP_NOTICE,
+    WM_APP_SNAPSHOT, WM_APP_UPDATE,
+};
 use crate::task;
 use crate::tray::{self, Tray, WM_APP_TRAY};
 use crate::ui::popup::{Popup, UiAction};
+use crate::update::{self, Status as UpdateStatus};
+use crate::updater;
 use crate::util::{WStr, fmt_bytes, fmt_hours, now_ms, wide};
 use crate::winactions;
 use memmanager_core::profile::Profile;
@@ -76,6 +81,8 @@ struct App {
     main: HWND,
     taskbar_created: u32,
     worker: Option<std::thread::JoinHandle<()>>,
+    started_ms: u64,
+    last_update_check: u64,
 }
 
 thread_local! {
@@ -170,12 +177,82 @@ fn run_elevated(params: &str) -> Option<HANDLE> {
 
 impl App {
     fn on_snapshot(&mut self) {
+        self.maybe_auto_check();
         let snap = self.shared.snapshot();
         self.tray.update(&snap, &self.cfg, &self.ap);
         self.popup.snap = snap;
         if self.popup.visible {
             self.popup.relayout();
         }
+    }
+
+    fn on_update_status(&mut self) {
+        self.popup.update = self.shared.update_status();
+        self.popup.invalidate();
+        if self.popup.visible {
+            self.popup.relayout();
+        }
+    }
+
+    /// Daily automatic check (after a short delay at start).
+    fn maybe_auto_check(&mut self) {
+        if !self.cfg.auto_update {
+            return;
+        }
+        let now = now_ms();
+        let due = if self.last_update_check == 0 {
+            now.saturating_sub(self.started_ms) >= update::FIRST_CHECK_DELAY_MS
+        } else {
+            now.saturating_sub(self.last_update_check) >= update::CHECK_EVERY_MS
+        };
+        if due {
+            self.start_update_check(false);
+        }
+    }
+
+    fn start_update_check(&mut self, manual: bool) {
+        if self.popup.update.busy() {
+            return;
+        }
+        self.last_update_check = now_ms();
+        let had_offer = matches!(self.popup.update, UpdateStatus::Available(_));
+        self.shared.set_update(UpdateStatus::Checking);
+        let shared = self.shared.clone();
+        let _ = std::thread::Builder::new()
+            .name("memmanager-update".into())
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let st = match updater::check(&updater::current_version()) {
+                    Ok(Some(o)) => {
+                        if !manual && !had_offer {
+                            shared.notify(Notice::Info {
+                                title: format!("MemManager {} is available", o.version),
+                                text: "Open MemManager to install it. It takes a few seconds and keeps your settings.".into(),
+                            });
+                        }
+                        UpdateStatus::Available(o)
+                    }
+                    Ok(None) => UpdateStatus::UpToDate { at_ms: now_ms() },
+                    Err(e) => UpdateStatus::Failed(e),
+                };
+                shared.set_update(st);
+            });
+    }
+
+    fn start_update_install(&mut self) {
+        let UpdateStatus::Available(offer) = self.popup.update.clone() else {
+            return;
+        };
+        self.shared
+            .set_update(UpdateStatus::Installing(offer.version.clone()));
+        let shared = self.shared.clone();
+        let _ = std::thread::Builder::new()
+            .name("memmanager-update".into())
+            .stack_size(256 * 1024)
+            .spawn(move || match updater::install(&offer) {
+                Ok(()) => shared.post(WM_APP_EXIT_FOR_UPDATE),
+                Err(e) => shared.set_update(UpdateStatus::Failed(e)),
+            });
     }
 
     fn on_notices(&mut self) {
@@ -287,6 +364,14 @@ enum Deferred {
     EnableCleaning,
     RemoveTask,
     EditExclusions,
+    ConfirmOptimize(String),
+    InstallUpdate,
+}
+
+/// Opens a web page as the signed-in user, never elevated: Explorer hands the
+/// URL to the default browser in the user's normal session.
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
 }
 
 fn handle_ui_action(a: UiAction) -> Deferred {
@@ -323,6 +408,20 @@ fn handle_ui_action(a: UiAction) -> Deferred {
         UiAction::EnableCleaning => Deferred::EnableCleaning,
         UiAction::RemoveTask => Deferred::RemoveTask,
         UiAction::EditExclusions => Deferred::EditExclusions,
+        UiAction::ConfirmOptimize(text) => Deferred::ConfirmOptimize(text),
+        UiAction::OpenExplainer => {
+            let mut c = app.cfg.clone();
+            c.explained = true;
+            app.apply_config(c);
+            open_url(crate::values::EXPLAINER_URL);
+            app.hide_popup();
+            Deferred::None
+        }
+        UiAction::CheckUpdate => {
+            app.start_update_check(true);
+            Deferred::None
+        }
+        UiAction::InstallUpdate => Deferred::InstallUpdate,
     })
     .unwrap_or(Deferred::None)
 }
@@ -341,6 +440,45 @@ fn run_deferred(d: Deferred) {
         Deferred::EnableCleaning => enable_cleaning(),
         Deferred::RemoveTask => remove_task(),
         Deferred::EditExclusions => edit_exclusions(),
+        Deferred::ConfirmOptimize(text) => {
+            if message_box(
+                popup_hwnd(),
+                &text,
+                "Optimize now",
+                MB_OKCANCEL | MB_ICONINFORMATION,
+            ) == IDOK
+            {
+                with_app(|a| a.shared.send(Command::OptimizeNow));
+            }
+        }
+        Deferred::InstallUpdate => install_update(),
+    }
+}
+
+fn install_update() {
+    let Some(UpdateStatus::Available(o)) = with_app(|a| a.popup.update.clone()) else {
+        return;
+    };
+    let how = match updater::kind() {
+        updater::Kind::Installed => {
+            "Windows may ask for permission to run the installer. MemManager closes, updates and starts again with your settings."
+        }
+        updater::Kind::Portable => {
+            "MemManager replaces its program file in this folder and starts again with your settings."
+        }
+    };
+    let text = format!(
+        "Install MemManager {} now?\n\n{how}\n\nThe download is checked against its published SHA-256 first.",
+        o.version
+    );
+    if message_box(
+        popup_hwnd(),
+        &text,
+        "Update MemManager",
+        MB_OKCANCEL | MB_ICONINFORMATION,
+    ) == IDOK
+    {
+        with_app(|a| a.start_update_install());
     }
 }
 
@@ -703,6 +841,14 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             with_app(|a| a.on_notices());
             LRESULT(0)
         }
+        WM_APP_UPDATE => {
+            with_app(|a| a.on_update_status());
+            LRESULT(0)
+        }
+        WM_APP_EXIT_FOR_UPDATE => {
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
         WM_APP_SHOW => {
             with_app(|a| a.show_popup());
             LRESULT(0)
@@ -920,7 +1066,13 @@ pub fn run(privileges: Privileges) -> i32 {
         // Allow messages from lower-integrity processes (Explorer, a second
         // non-elevated instance) to reach the elevated tray window.
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
-        for m in [taskbar_created, WM_APP_SHOW, WM_APP_TRAY, WM_COMMAND] {
+        for m in [
+            taskbar_created,
+            WM_APP_SHOW,
+            WM_APP_TRAY,
+            WM_COMMAND,
+            WM_APP_EXIT_FOR_UPDATE,
+        ] {
             let _ = ChangeWindowMessageFilterEx(main, m, MSGFLT_ALLOW, None);
         }
         let _ = RegisterPowerSettingNotification(
@@ -975,6 +1127,8 @@ pub fn run(privileges: Privileges) -> i32 {
                 main,
                 taskbar_created,
                 worker,
+                started_ms: now_ms(),
+                last_update_check: 0,
             });
         });
 
