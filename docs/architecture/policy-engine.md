@@ -45,8 +45,12 @@ F_target   = profile.free_target_frac × total_bytes            (see §6)
 phys       = clamp01((F_target − fast_avail) / F_target)
 commit     = clamp01((commit/commit_limit − 0.70) / 0.25)       // 0 at 70%, 1 at 95%
 churn_rate = Δchurn_pages / Δt × page_size / total_bytes         // fraction of RAM repurposed per second
-churn      = clamp01(churn_rate / 0.002)                          // 0.2% of RAM/s of high-prio repurpose ⇒ 1
+short      = clamp01((2·F_target − fast_avail) / F_target)       // 1 at/below target, 0 at 2× target
+churn      = clamp01(churn_rate / 0.002) × short                  // 0.2% of RAM/s of high-prio repurpose ⇒ 1,
+                                                                  // counted only while fast memory is short
 P = max(phys, commit, churn)
+driver     = argmax(phys, commit, churn)                          // shown to the user; RAM actions don't run
+                                                                  // when commit is the driver (they never lower it)
 ```
 
 **macOS:**

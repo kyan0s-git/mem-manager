@@ -41,7 +41,7 @@ pub fn run(seconds: u64, out: Option<String>) -> i32 {
         ticks += 1;
         let _ = write!(
             samples,
-            "{}{{\"t_ms\":{},\"used\":{:.4},\"fast_avail\":{},\"standby\":{},\"modified\":{},\"commit\":{},\"commit_limit\":{},\"p\":{:.4},\"s\":{:.4},\"state\":\"{}\",\"hard_fault_rate\":{:.1}}}",
+            "{}{{\"t_ms\":{},\"used\":{:.4},\"fast_avail\":{},\"standby\":{},\"modified\":{},\"commit\":{},\"commit_limit\":{},\"pagefile_used\":{},\"pagefile_total\":{},\"driver\":\"{:?}\",\"p\":{:.4},\"s\":{:.4},\"state\":\"{}\",\"hard_fault_rate\":{:.1}}}",
             if ticks > 1 { "," } else { "" },
             t - start,
             r.used_fraction(),
@@ -50,6 +50,9 @@ pub fn run(seconds: u64, out: Option<String>) -> i32 {
             r.modified,
             r.commit,
             r.commit_limit,
+            r.pagefile_used,
+            r.pagefile_total,
+            eng.driver,
             eng.last_p,
             eng.sm.smoothed(),
             eng.sm.state().name(),

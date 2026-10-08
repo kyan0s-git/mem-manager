@@ -89,7 +89,7 @@ extension Presentation {
         if acting { return "Working on it…" }
         if paused { return "Paused · not acting on its own" }
         switch state {
-        case .normal: return "Watching · nothing to do"
+        case .normal: return "Watching · macOS is handling memory"
         case .elevated: return "Memory is busy · watching closely"
         case .high: return "Memory is tight · acting where it helps"
         case .critical: return "Memory is critical · macOS is reclaiming"

@@ -72,6 +72,8 @@ enum ActionID {
 enum Notice {
     case leak(key: String, name: String, slope: Double, etaH: Double?, runaway: Bool, bundlePath: String?)
     case swap(text: String)
+    /// Offer to quit an idle app holding a lot of memory (sustained high pressure).
+    case suggestQuit(name: String, target: String, text: String)
     case info(title: String, text: String)
 }
 
@@ -105,6 +107,7 @@ final class Engine {
     private var swapHist = Ring<(UInt64, UInt64)>(capacity: 64)
     private var lastSwapNoticeMs: UInt64?
     private var lastActivated: [String: Date] = [:]
+    private var lastSuggested: [String: UInt64] = [:]
     private let launchDate = Date()
 
     /// Called on the main thread.
@@ -227,7 +230,31 @@ final class Engine {
         }
         swapHist.push((now, r.swapUsed))
         checkSwap(now: now)
-        if !paused(now) { maybeAct(now: now, state: state) }
+        if !paused(now) {
+            maybeAct(now: now, state: state)
+            maybeSuggestQuit(now: now, state: state)
+        }
+    }
+
+    /// macOS frees memory by itself; what an unprivileged app can add under real,
+    /// sustained pressure is to name the idle app holding the most memory and offer
+    /// a one-click Quit. Never automatic (that is the opt-in auto-quit list); at most
+    /// once per app per 6 hours.
+    private func maybeSuggestQuit(now: UInt64, state: PressureState) {
+        guard settings.suggestQuit, state >= .high, sustained(2 * 60_000, now) else { return }
+        let candidates = idleHeavy(now: now).filter {
+            !settings.autoQuit.contains($0.name.lowercased())
+                && (lastSuggested[$0.key].map { now &- $0 >= 6 * 3_600_000 } ?? true)
+        }
+        guard let app = candidates.first else { return }
+        lastSuggested[app.key] = now
+        let idle = fmtHours(app.idleHours ?? 0)
+        let text = "\(app.name) hasn't been used for \(idle) and holds \(fmtBytes(app.footprint)). Quitting it gives that memory back."
+        let n = Notice.suggestQuit(name: app.name, target: app.bundlePath ?? app.name, text: text)
+        onMain { $0.onNotice?(n) }
+        log(ActivityRow(tMs: now, title: "Suggested quitting \(app.name)",
+                        why: "Memory stayed tight; \(app.name) was idle for \(idle) holding \(fmtBytes(app.footprint))",
+                        detail: "Nothing is quit unless you choose to", alert: true))
     }
 
     private func paused(_ now: UInt64) -> Bool { pausedUntil.map { now < $0 } ?? false }

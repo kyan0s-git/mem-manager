@@ -4,6 +4,7 @@ import UserNotifications
 /// Leak / swap notifications with Quit, Relaunch and Ignore actions.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let leakCategory = "LEAK"
+    static let idleCategory = "IDLE"
     private var authorized: Bool?
     var onQuit: ((String) -> Void)?
     var onRelaunch: ((String) -> Void)?
@@ -21,6 +22,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let ignore = UNNotificationAction(identifier: "IGNORE", title: "Ignore this app", options: [])
         c.setNotificationCategories([
             UNNotificationCategory(identifier: Notifier.leakCategory, actions: [relaunch, quit, ignore], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Notifier.idleCategory, actions: [quit], intentIdentifiers: []),
         ])
     }
 

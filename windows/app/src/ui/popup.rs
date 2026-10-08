@@ -90,6 +90,8 @@ struct Extras {
 }
 
 const LINE2_H: f32 = 34.0;
+/// Virtual memory row: caption + thin bar.
+const VM_H: f32 = 26.0;
 const ROW_H: f32 = 32.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +262,9 @@ impl Popup {
         let rows = self.snap.top.len().min(5) as f32;
         let mut h = 280.0 + rows * 32.0 + 8.0;
         let e = self.extras();
+        if self.snap.reading.commit_limit > 0 {
+            h += VM_H;
+        }
         if e.update.is_some() {
             h += ROW_H + 4.0;
         }
@@ -877,6 +882,40 @@ impl Popup {
             );
         }
         y += 48.0;
+
+        // Virtual memory: commit charge against the commit limit (RAM + page
+        // file). Apps fail to allocate when it fills, however much RAM is free.
+        if r.commit_limit > 0 {
+            let f = r.commit_fraction() as f32;
+            g.text(
+                &values::virtual_line(
+                    r.commit,
+                    r.commit_limit,
+                    r.pagefile_used,
+                    r.pagefile_total,
+                    friendly,
+                ),
+                Rect::new(PAD, y - 6.0, W - 2.0 * PAD, 18.0),
+                Font::Caption,
+                p.text2,
+                Align::Left,
+            );
+            let vbar = Rect::new(PAD, y + 14.0, W - 2.0 * PAD, 4.0);
+            g.fill_round(vbar, 2.0, p.track);
+            let vcol = if f >= 0.9 {
+                p.danger
+            } else if f >= 0.8 {
+                p.warn
+            } else {
+                p.text3
+            };
+            g.fill_round(
+                Rect::new(vbar.x, vbar.y, (vbar.w * f).max(2.0), 4.0),
+                2.0,
+                vcol,
+            );
+            y += VM_H;
+        }
         if extras.explainer {
             g.text_wrapped(
                 "Speed-up cache keeps recent files and app data in memory. Windows hands it to apps the moment they need it.",
@@ -1069,6 +1108,7 @@ impl Popup {
             snap.game_mode,
             snap.acting,
             snap.state,
+            snap.driver,
         );
         g.text(
             &format!("Now: {now}"),
@@ -1322,7 +1362,10 @@ impl Popup {
                 );
             }
             let (result, col) = if a.measured {
-                let (t, tone) = values::result_text(a.freed, a.refault_ratio, a.pending);
+                let (mut t, tone) = values::result_text(a.freed, a.refault_ratio, a.pending);
+                if let Some(pf) = values::pagefile_note(a.pagefile_delta) {
+                    t = format!("{t} · {pf}");
+                }
                 let c = match tone {
                     values::Tone::Good => p.good,
                     values::Tone::Warn => p.warn,

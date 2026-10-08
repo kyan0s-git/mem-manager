@@ -15,7 +15,7 @@ use memmanager_core::actions::{Ledger, RegretTracker, Scheduler};
 use memmanager_core::cadence::{cadence, tolerance_ms};
 use memmanager_core::leak::eta_hours;
 use memmanager_core::ring::Ring;
-use memmanager_core::sample::{Sample, pressure_windows};
+use memmanager_core::sample::{Driver, Sample, pressure_windows};
 use memmanager_core::state::{PressureState, StateMachine};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -51,6 +51,9 @@ struct Act {
     alert: bool,
     /// Has a ledger entry at `t_ms` with a measured result.
     action: bool,
+    /// Page-file bytes in use just before, and ~2 s after, the action.
+    pf_before: u64,
+    pf_after: Option<u64>,
 }
 const LOW_MEM_SUPPRESS_MS: u64 = 30_000;
 const ACTING_MS: u64 = 1_500;
@@ -91,6 +94,8 @@ pub struct Engine {
     prev_sample: Option<Sample>,
     pub last: SysReading,
     pub last_p: f64,
+    /// What sets the pressure right now (RAM, virtual memory or cache churn).
+    pub driver: Driver,
     history: Ring<f32, 120>,
     /// (apps, cache) fractions, same cadence as `history`.
     history_split: Ring<(f32, f32), 120>,
@@ -131,6 +136,7 @@ impl Engine {
             prev_sample: None,
             last: SysReading::default(),
             last_p: 0.0,
+            driver: Driver::None,
             history: Ring::new(),
             history_split: Ring::new(),
             last_history_ms: 0,
@@ -267,6 +273,8 @@ impl Engine {
             manual: true,
             alert: false,
             action: false,
+            pf_before: 0,
+            pf_after: None,
         });
         self.next_proc_ms = now;
     }
@@ -290,6 +298,7 @@ impl Engine {
         );
         let p = wp.p();
         self.last_p = p;
+        self.driver = wp.driver();
         let state = self.sm.step(now, p, event);
         if self.regret.observe(
             now,
@@ -307,6 +316,12 @@ impl Engine {
             }
         }
         self.prev_sample = Some(r.sample);
+        // Page-file use ~2 s after each action: how much "freed" RAM went to disk.
+        for a in self.activity.iter_mut().rev().take(4) {
+            if a.action && a.pf_after.is_none() && now.saturating_sub(a.t_ms) >= 2_000 {
+                a.pf_after = Some(r.pagefile_used);
+            }
+        }
         self.last = r;
         if self.last_history_ms == 0 || now.saturating_sub(self.last_history_ms) >= HISTORY_EVERY_MS
         {
@@ -348,6 +363,8 @@ impl Engine {
                 manual: false,
                 alert: true,
                 action: false,
+                pf_before: 0,
+                pf_after: None,
             });
             self.pool_note = Some(note);
         }
@@ -383,12 +400,21 @@ impl Engine {
                 manual: false,
                 alert: true,
                 action: false,
+                pf_before: 0,
+                pf_after: None,
             });
         }
 
         self.maybe_file_cache_cap(&r);
         if !self.paused(now) {
-            self.maybe_act(now, state, wp.phys >= wp.commit);
+            // RAM actions only help when RAM (not the commit limit) is short:
+            // trimming or purging never lowers commit charge.
+            self.maybe_act(
+                now,
+                state,
+                wp.phys >= wp.commit,
+                wp.phys.max(wp.churn) > 0.0,
+            );
         }
     }
 
@@ -407,7 +433,7 @@ impl Engine {
         }
     }
 
-    fn maybe_act(&mut self, now: u64, state: PressureState, physical: bool) {
+    fn maybe_act(&mut self, now: u64, state: PressureState, physical: bool, ram_short: bool) {
         if self.regret.is_pending() {
             return;
         }
@@ -441,7 +467,9 @@ impl Engine {
                     && r.low_repurpose_rate >= 0.0005 * total
             }
             ids::TRIM_IDLE => !game && physical && has_idle,
-            ids::FLUSH_MODIFIED => caps.mem_commands && (r.modified as f64) >= 0.05 * total,
+            ids::FLUSH_MODIFIED => {
+                caps.mem_commands && ram_short && (r.modified as f64) >= 0.05 * total
+            }
             ids::COMBINE => caps.combine && user_idle && on_ac,
             _ => false,
         });
@@ -606,6 +634,8 @@ impl Engine {
             manual,
             alert: false,
             action: true,
+            pf_before: before.pagefile_used,
+            pf_after: None,
         });
         self.acting_until = now + ACTING_MS;
         // Measure the immediate effect right away (the 2 s "after" sample comes later).
@@ -769,6 +799,8 @@ impl Engine {
                     manual: false,
                     alert: true,
                     action: false,
+                    pf_before: 0,
+                    pf_after: None,
                 });
             }
         }
@@ -836,6 +868,9 @@ impl Engine {
                         freed: e.map_or(0, |e| e.freed_bytes()),
                         refault_ratio: e.map_or(0.0, |e| e.refault_ratio),
                         pending: e.is_some_and(|e| e.pending),
+                        pagefile_delta: a
+                            .pf_after
+                            .map_or(0, |after| after as i64 - a.pf_before as i64),
                     }
                 })
                 .collect()
@@ -845,6 +880,7 @@ impl Engine {
         Snapshot {
             t_ms: now,
             reading: self.last,
+            driver: self.driver,
             compressed: self.procs.compressed_store(),
             s: self.sm.smoothed(),
             state: self.sm.state(),

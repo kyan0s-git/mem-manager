@@ -274,6 +274,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             notifier.post(title: "Your Mac is swapping heavily", body: text)
         case let .info(title, text):
             notifier.post(title: title, body: text)
+        case let .suggestQuit(name, target, text):
+            notifier.post(title: "Memory is tight — quit \(name)?", body: text, category: Notifier.idleCategory, target: target)
         }
     }
 }

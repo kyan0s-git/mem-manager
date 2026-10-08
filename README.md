@@ -126,6 +126,7 @@ Every CI run on the branch uploads the same packages (version `0.0.0`) under **A
 - [macOS memory internals, pressure, and safe actions](docs/research/macos-memory-internals.md)
 - [Leak and runaway detection](docs/research/leak-detection.md)
 - [Survey of existing tools](docs/research/existing-tools.md)
+- [WinMemoryCleaner: methodology analysis](docs/research/winmemorycleaner.md)
 - [Low-footprint UI: tray, menu bar, icons, theming](docs/research/low-footprint-ui.md)
 - [Sources](docs/research/sources.md)
 

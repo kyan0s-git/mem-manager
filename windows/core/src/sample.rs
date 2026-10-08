@@ -42,9 +42,36 @@ pub struct WinPressure {
     pub churn: f64,
 }
 
+/// Which sub-score sets the pressure (for explaining the state).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Driver {
+    #[default]
+    None,
+    /// Little fast-available RAM.
+    Ram,
+    /// Commit charge close to the commit limit (RAM + page file).
+    Commit,
+    /// Windows recycling its useful cache quickly while RAM is short.
+    Churn,
+}
+
 impl WinPressure {
     pub fn p(&self) -> f64 {
         self.phys.max(self.commit).max(self.churn)
+    }
+
+    /// The dominant sub-score, or `None` when all are negligible.
+    pub fn driver(&self) -> Driver {
+        let p = self.p();
+        if p < 0.05 {
+            Driver::None
+        } else if self.commit >= p {
+            Driver::Commit
+        } else if self.phys >= p {
+            Driver::Ram
+        } else {
+            Driver::Churn
+        }
     }
 }
 
@@ -57,11 +84,16 @@ pub fn pressure_windows(cur: &Sample, prev: Option<&Sample>, free_target_frac: f
     } else {
         0.0
     };
+    // Cache recycling only signals pressure while fast memory is actually short:
+    // with plenty free, Windows repurposing standby pages (e.g. during large file
+    // copies) is normal and must not raise the state. Full weight at or below the
+    // free target, fading to zero at twice the target.
+    let short = clamp01((2.0 * f_target - cur.fast_avail_bytes as f64) / f_target);
     let churn = match dt_s(cur, prev) {
         Some((dt, prev)) => {
             let pages = cur.churn_pages_cum.saturating_sub(prev.churn_pages_cum) as f64;
             let rate = pages * cur.page_size as f64 / total / dt;
-            clamp01(rate / 0.002)
+            clamp01(rate / 0.002) * short
         }
         None => 0.0,
     };
@@ -122,6 +154,52 @@ mod tests {
         assert!((p.commit - (20.0 / 24.0 - 0.70) / 0.25).abs() < 1e-9);
         assert_eq!(p.churn, 0.0);
         assert!((p.p() - p.commit).abs() < 1e-12);
+    }
+
+    #[test]
+    fn churn_needs_short_memory() {
+        let gib = 1u64 << 30;
+        let prev = Sample {
+            t_ms: 0,
+            page_size: 4096,
+            total_bytes: 32 * gib,
+            commit_limit: 64 * gib,
+            commit_bytes: 10 * gib,
+            ..Default::default()
+        };
+        // Heavy recycling (0.4% of RAM per second) …
+        let pages = (0.004 * (32 * gib) as f64 * 10.0 / 4096.0) as u64;
+        let busy = |free: u64| Sample {
+            t_ms: 10_000,
+            fast_avail_bytes: free,
+            churn_pages_cum: pages,
+            ..prev
+        };
+        // … with 18 GiB free is not pressure.
+        let p = pressure_windows(&busy(18 * gib), Some(&prev), 0.06);
+        assert_eq!(p.churn, 0.0);
+        assert_eq!(p.driver(), Driver::None);
+        // … with fast memory below target it is.
+        let p = pressure_windows(&busy(gib), Some(&prev), 0.06);
+        assert!((p.churn - 1.0).abs() < 1e-9);
+        assert_eq!(p.driver(), Driver::Churn);
+    }
+
+    #[test]
+    fn driver_names_the_cause() {
+        let commit_bound = WinPressure {
+            phys: 0.0,
+            commit: 0.9,
+            churn: 0.0,
+        };
+        assert_eq!(commit_bound.driver(), Driver::Commit);
+        let ram_bound = WinPressure {
+            phys: 0.7,
+            commit: 0.2,
+            churn: 0.3,
+        };
+        assert_eq!(ram_bound.driver(), Driver::Ram);
+        assert_eq!(WinPressure::default().driver(), Driver::None);
     }
 
     #[test]

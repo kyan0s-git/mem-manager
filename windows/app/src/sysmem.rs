@@ -20,6 +20,9 @@ pub struct SysReading {
     pub standby_prio0: u64,
     pub commit: u64,
     pub commit_limit: u64,
+    /// Page-file bytes in use / total (all page files). 0/0 without a page file.
+    pub pagefile_used: u64,
+    pub pagefile_total: u64,
     pub kernel_paged: u64,
     pub kernel_nonpaged: u64,
     pub system_cache: u64,
@@ -94,6 +97,11 @@ impl SysSampler {
             system_cache: pi.SystemCache as u64 * page,
             ..Default::default()
         };
+
+        if let Ok((used, total)) = nt::pagefile_pages() {
+            r.pagefile_used = used * page;
+            r.pagefile_total = total * page;
+        }
 
         let lists = nt::memory_lists();
         self.lists_ok = Some(lists.is_ok());

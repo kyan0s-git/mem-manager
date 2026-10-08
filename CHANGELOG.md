@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Windows
+- **Fixed: "Critical" with plenty of free RAM.**
+  - Fast cache recycling no longer counts as pressure unless fast memory is actually short
+    (for example during large file copies with lots of RAM free).
+  - When the state is high because of virtual memory (commit near its limit), the dashboard
+    says so: "Virtual memory is nearly full · RAM cleaning won't help".
+  - RAM-only actions no longer run for it.
+- **Virtual memory everywhere:**
+  - A dashboard row shows commit against the commit limit (RAM + page file) and page-file use.
+  - Each action in Activity shows how much of the "freed" RAM went to the page file.
+  - The Optimize and Deep clean dialogs say so up front.
+- [WinMemoryCleaner methodology analysis](docs/research/winmemorycleaner.md).
+
+### macOS
+- **One-click Quit offers.** When memory stays tight, MemManager offers to quit the idle app
+  holding the most memory, with a notification and a Quit button. It never quits on its own;
+  each app is offered at most once every 6 hours, and the offer can be turned off in Settings.
+- **Clear about what it can do:**
+  - The Activity page states what MemManager can do on this Mac. macOS manages memory itself;
+    Nudge needs the helper, which needs a Developer-ID-signed build.
+  - The "Now" line reads "macOS is handling memory".
+
 ## v0.3.0 — see what MemManager does, and an app icon
 
 - **See what MemManager does:**

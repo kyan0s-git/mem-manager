@@ -46,7 +46,7 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(Presentation.resultText(freed: 0, refaultRatio: 0.5, pending: false).1, .warn)
         XCTAssertEqual(Presentation.summary(actions: 0, freed: 0, slowdowns: 0), "No actions yet.")
         XCTAssertEqual(Presentation.summary(actions: 3, freed: g, slowdowns: 0), "3 actions · 1.0 GB back · no slowdowns")
-        XCTAssertEqual(Presentation.nowLine(paused: false, acting: false, state: .normal), "Watching · nothing to do")
+        XCTAssertEqual(Presentation.nowLine(paused: false, acting: false, state: .normal), "Watching · macOS is handling memory")
         XCTAssertEqual(Presentation.nowLine(paused: true, acting: true, state: .high), "Working on it…")
         XCTAssertEqual(Presentation.markerPos(ageMs: 300_000, windowMs: 600_000), 0.5)
         XCTAssertNil(Presentation.markerPos(ageMs: 700_000, windowMs: 600_000))

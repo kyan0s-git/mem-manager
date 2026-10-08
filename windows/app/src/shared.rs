@@ -55,6 +55,8 @@ pub struct ActivityRow {
     pub freed: u64,
     pub refault_ratio: f64,
     pub pending: bool,
+    /// Change in page-file use across the action (bytes; 0 until measured).
+    pub pagefile_delta: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +72,8 @@ pub struct Caps {
 pub struct Snapshot {
     pub t_ms: u64,
     pub reading: SysReading,
+    /// What sets the pressure (RAM, virtual memory, cache churn).
+    pub driver: memmanager_core::sample::Driver,
     pub compressed: u64,
     pub s: f64,
     pub state: PressureState,

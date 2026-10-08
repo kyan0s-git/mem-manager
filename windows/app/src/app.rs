@@ -508,7 +508,8 @@ fn deep_clean() {
         owner,
         "Deep clean empties every app's working set and all memory caches at once.\n\n\
          It frees the most RAM right now, but apps will be slow for a few seconds while they read their \
-         data back in. MemManager's automatic optimization is usually the better choice.\n\nRun deep clean now?",
+         data back in, and changed data they held is written to the page file (virtual memory) first. \
+         MemManager's automatic optimization is usually the better choice.\n\nRun deep clean now?",
         "Deep clean",
         MB_OKCANCEL | MB_ICONWARNING,
     );

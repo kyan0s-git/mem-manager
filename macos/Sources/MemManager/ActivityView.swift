@@ -9,6 +9,8 @@ final class ActivityPageView: NSView {
     private let back = NSButton(title: "Activity", target: nil, action: nil)
     private let summary = label(size: 13, weight: .semibold)
     private let room = caption(color: .secondaryLabelColor)
+    /// What MemManager can actually do on this Mac (macOS manages memory itself).
+    private let can = caption(lines: 4, color: .tertiaryLabelColor)
     private let empty = caption("Nothing yet. MemManager only steps in when memory gets tight, and every step it takes shows up here with the reason and its measured effect.",
                                 lines: 4)
     private let list = NSStackView()
@@ -39,11 +41,11 @@ final class ActivityPageView: NSView {
         scroll.autohidesScrollers = true
         scroll.documentView = doc
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        for c in [room, empty] { c.preferredMaxLayoutWidth = 312 }
+        for c in [room, empty, can] { c.preferredMaxLayoutWidth = 312 }
 
         let sep = NSBox()
         sep.boxType = .separator
-        let top = NSStackView(views: [back, summary, room, sep])
+        let top = NSStackView(views: [back, summary, room, can, sep])
         top.orientation = .vertical
         top.alignment = .leading
         top.spacing = 6
@@ -74,7 +76,10 @@ final class ActivityPageView: NSView {
 
     @objc private func goBack() { onBack() }
 
-    func render(_ snap: Snapshot) {
+    func render(_ snap: Snapshot, helperInstalled: Bool) {
+        can.stringValue = helperInstalled
+            ? "macOS manages memory itself. MemManager adds: Nudge (asks apps to drop caches they can rebuild), leak and swap alerts, and a one-click Quit for idle apps when memory stays tight."
+            : "macOS manages memory itself, so MemManager doesn't override it. It watches, alerts about leaks and swap, and offers a one-click Quit for idle apps when memory stays tight. Nudge needs the helper (Settings), which needs a Developer-ID-signed build."
         let acts = snap.activity.filter(\.measured)
         let slow = acts.filter { !$0.pending && $0.refaultRatio >= 0.25 }.count
         summary.stringValue = Presentation.summary(actions: acts.count, freed: acts.reduce(UInt64(0)) { $0 + $1.freed },

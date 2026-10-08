@@ -14,6 +14,7 @@ unsafe extern "system" {
 
 pub const SYSTEM_PERFORMANCE_INFORMATION: u32 = 2;
 pub const SYSTEM_PROCESS_INFORMATION: u32 = 5;
+pub const SYSTEM_PAGEFILE_INFORMATION: u32 = 18;
 pub const SYSTEM_POOLTAG_INFORMATION: u32 = 22;
 pub const SYSTEM_MEMORY_LIST_INFORMATION: u32 = 80;
 pub const SYSTEM_FILECACHE_INFORMATION_EX: u32 = 81;
@@ -72,6 +73,49 @@ pub fn memory_lists() -> Result<MemoryLists, i32> {
         )
     };
     if ok(st) { Ok(v) } else { Err(st) }
+}
+
+/// Page-file usage summed over all page files: (in use, total) in pages.
+/// `SYSTEM_PAGEFILE_INFORMATION` entries are chained by `NextEntryOffset`:
+/// { ULONG NextEntryOffset; ULONG TotalSize; ULONG TotalInUse; ULONG PeakUsage;
+///   UNICODE_STRING PageFileName; }. No page file → (0, 0).
+pub fn pagefile_pages() -> Result<(u64, u64), i32> {
+    let mut buf = [0u64; 512]; // 4 KiB: room for many page files
+    let mut ret = 0u32;
+    let st = unsafe {
+        NtQuerySystemInformation(
+            SYSTEM_PAGEFILE_INFORMATION,
+            buf.as_mut_ptr().cast(),
+            size_of_val(&buf) as u32,
+            &mut ret,
+        )
+    };
+    if !ok(st) {
+        return Err(st);
+    }
+    // SAFETY: the buffer is 8-byte aligned and the kernel wrote `ret` bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), ret as usize) };
+    Ok(sum_pagefiles(bytes))
+}
+
+fn sum_pagefiles(bytes: &[u8]) -> (u64, u64) {
+    let u32_at = |o: usize| -> Option<u32> {
+        bytes
+            .get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let (mut used, mut total, mut off) = (0u64, 0u64, 0usize);
+    while let (Some(next), Some(size), Some(in_use)) =
+        (u32_at(off), u32_at(off + 4), u32_at(off + 8))
+    {
+        total += size as u64;
+        used += in_use as u64;
+        if next == 0 {
+            break;
+        }
+        off += next as usize;
+    }
+    (used, total)
 }
 
 /// Leading part of `SYSTEM_PERFORMANCE_INFORMATION`; the full structure is
@@ -418,6 +462,19 @@ mod tests {
         assert_eq!(size_of::<PoolTag>(), 40);
         #[cfg(target_pointer_width = "64")]
         assert_eq!(std::mem::offset_of!(RawProcess, private_page_count), 0xC8);
+    }
+
+    #[test]
+    fn pagefile_entries_are_summed() {
+        let mut b = vec![0u8; 64];
+        // entry 1 at 0: next = 32, size 1000, in use 250; entry 2 at 32: size 500, in use 100
+        b[0..4].copy_from_slice(&32u32.to_le_bytes());
+        b[4..8].copy_from_slice(&1000u32.to_le_bytes());
+        b[8..12].copy_from_slice(&250u32.to_le_bytes());
+        b[36..40].copy_from_slice(&500u32.to_le_bytes());
+        b[40..44].copy_from_slice(&100u32.to_le_bytes());
+        assert_eq!(sum_pagefiles(&b), (350, 1500));
+        assert_eq!(sum_pagefiles(&[]), (0, 0));
     }
 }
 

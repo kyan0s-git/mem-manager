@@ -50,6 +50,7 @@ struct EngineSettings {
     var autoNudge = false
     var notifyLeaks = true
     var notifySwap = true
+    var suggestQuit = true
     var heavy: Set<String> = []
     var ignoreLeaks: Set<String> = []
     var autoQuit: Set<String> = []
@@ -73,6 +74,8 @@ final class AppSettings: ObservableObject {
     @Published var autoNudge = false { didSet { save() } }
     @Published var notifyLeaks = true { didSet { save() } }
     @Published var notifySwap = true { didSet { save() } }
+    /// Under sustained high pressure, offer to quit the largest idle app (one click, never automatic).
+    @Published var suggestQuit = true { didSet { save() } }
     @Published var ignoreLeaks: [String] = [] { didSet { save() } }
     @Published var autoQuit: [String] = [] { didSet { save() } }
     @Published var heavy: [String] = AppSettings.defaultHeavy { didSet { save() } }
@@ -102,6 +105,7 @@ final class AppSettings: ObservableObject {
         if d.object(forKey: "autoNudge") != nil { autoNudge = d.bool(forKey: "autoNudge") }
         if d.object(forKey: "notifyLeaks") != nil { notifyLeaks = d.bool(forKey: "notifyLeaks") }
         if d.object(forKey: "notifySwap") != nil { notifySwap = d.bool(forKey: "notifySwap") }
+        if d.object(forKey: "suggestQuit") != nil { suggestQuit = d.bool(forKey: "suggestQuit") }
         ignoreLeaks = d.stringArray(forKey: "ignoreLeaks") ?? []
         autoQuit = d.stringArray(forKey: "autoQuit") ?? []
         heavy = d.stringArray(forKey: "heavy") ?? AppSettings.defaultHeavy
@@ -121,6 +125,7 @@ final class AppSettings: ObservableObject {
         d.set(autoNudge, forKey: "autoNudge")
         d.set(notifyLeaks, forKey: "notifyLeaks")
         d.set(notifySwap, forKey: "notifySwap")
+        d.set(suggestQuit, forKey: "suggestQuit")
         d.set(ignoreLeaks, forKey: "ignoreLeaks")
         d.set(autoQuit, forKey: "autoQuit")
         d.set(heavy, forKey: "heavy")
@@ -136,6 +141,7 @@ final class AppSettings: ObservableObject {
             autoNudge: autoNudge,
             notifyLeaks: notifyLeaks,
             notifySwap: notifySwap,
+            suggestQuit: suggestQuit,
             heavy: Set(heavy.map { $0.lowercased() }),
             ignoreLeaks: Set(ignoreLeaks.map { $0.lowercased() }),
             autoQuit: Set(autoQuit.map { $0.lowercased() })

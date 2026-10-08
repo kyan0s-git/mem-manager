@@ -6,6 +6,7 @@
 //! value; only the grouping and the words differ. The "Windows standard"
 //! option keeps Task Manager's terms. Pure functions, unit-tested on any OS.
 
+use memmanager_core::sample::Driver;
 use memmanager_core::state::PressureState;
 
 /// "1.4 GB", "820 MB", "12 KB" (binary units, Windows-style labels).
@@ -146,8 +147,9 @@ pub fn optimize_preview(st: PressureState, s: &Split, friendly: bool) -> Option<
     }
     Some(format!(
         "Memory is comfortable: {} is ready for apps, including {} of speed-up cache.\n\n\
-         Optimizing now would trim apps you haven't used for a while (they take a moment to wake up) \
-         and clear cache Windows has marked as low-value. It won't make anything faster right now, \
+         Optimizing now would trim apps you haven't used for a while (they take a moment to wake up; \
+         some of what's trimmed is written to the page file rather than freed) and clear cache Windows \
+         has marked as low-value. It won't make anything faster right now, \
          and MemManager already steps in on its own when memory gets tight.\n\nOptimize anyway?",
         fmt_bytes(s.ready()),
         fmt_bytes(s.cache)
@@ -229,6 +231,40 @@ pub fn result_text(freed: u64, refault_ratio: f64, pending: bool) -> (String, To
     }
 }
 
+/// "· 300 MB moved to the page file": RAM that was "freed" by writing it to disk.
+pub fn pagefile_note(delta: i64) -> Option<String> {
+    (delta >= 32 << 20).then(|| format!("{} moved to the page file", fmt_bytes(delta as u64)))
+}
+
+/// "Virtual memory 21.3 of 40 GB · page file 2.1 of 8.0 GB" (commit charge
+/// against the commit limit, i.e. RAM plus page file).
+pub fn virtual_line(
+    commit: u64,
+    limit: u64,
+    pf_used: u64,
+    pf_total: u64,
+    friendly: bool,
+) -> String {
+    let head = if friendly {
+        format!(
+            "Virtual memory {} of {}",
+            fmt_bytes(commit),
+            fmt_bytes(limit)
+        )
+    } else {
+        format!("Committed {} of {}", fmt_bytes(commit), fmt_bytes(limit))
+    };
+    if pf_total == 0 {
+        format!("{head} · no page file")
+    } else {
+        format!(
+            "{head} · page file {} of {}",
+            fmt_bytes(pf_used),
+            fmt_bytes(pf_total)
+        )
+    }
+}
+
 /// One line over the activity list: "3 actions · 2.3 GB back · no slowdowns".
 pub fn summary(actions: usize, freed: u64, slowdowns: usize) -> String {
     if actions == 0 {
@@ -247,14 +283,26 @@ pub fn summary(actions: usize, freed: u64, slowdowns: usize) -> String {
     format!("{n} · {} back · {slow}", fmt_bytes(freed))
 }
 
-/// What MemManager is doing right now, in a few words.
+/// What MemManager is doing right now, in a few words; when memory is under
+/// pressure it names the cause, so a "Critical" with lots of free RAM explains
+/// itself (virtual memory, not RAM).
 pub fn now_line(
     paused: bool,
     monitor_only: bool,
     game: bool,
     acting: bool,
     st: PressureState,
+    driver: Driver,
 ) -> &'static str {
+    if !acting && !paused && !game && st != PressureState::Normal {
+        match driver {
+            Driver::Commit => {
+                return "Virtual memory is nearly full · RAM cleaning won't help";
+            }
+            Driver::Churn => return "Windows is recycling its cache fast",
+            _ => {}
+        }
+    }
     if acting {
         "Working on it…"
     } else if paused {
@@ -383,13 +431,41 @@ mod tests {
         assert_eq!(summary(3, G, 0), "3 actions · 1.0 GB back · no slowdowns");
         assert_eq!(summary(1, 0, 1), "1 action · 0 KB back · 1 slowdown");
         assert_eq!(
-            now_line(false, false, false, false, PressureState::Normal),
+            now_line(
+                false,
+                false,
+                false,
+                false,
+                PressureState::Normal,
+                Driver::None
+            ),
             "Watching · nothing to do"
         );
         assert_eq!(
-            now_line(true, false, true, true, PressureState::High),
+            now_line(true, false, true, true, PressureState::High, Driver::Ram),
             "Working on it…"
         );
+        assert!(
+            now_line(
+                false,
+                false,
+                false,
+                false,
+                PressureState::Critical,
+                Driver::Commit
+            )
+            .starts_with("Virtual memory")
+        );
+        assert_eq!(pagefile_note(10 << 20), None);
+        assert_eq!(
+            pagefile_note(300 << 20).unwrap(),
+            "300 MB moved to the page file"
+        );
+        assert_eq!(
+            virtual_line(20 * G, 40 * G, G, 8 * G, true),
+            "Virtual memory 20.0 GB of 40.0 GB · page file 1.0 GB of 8.0 GB"
+        );
+        assert!(virtual_line(20 * G, 32 * G, 0, 0, false).ends_with("no page file"));
         assert_eq!(marker_pos(0, 600_000), Some(1.0));
         assert_eq!(marker_pos(300_000, 600_000), Some(0.5));
         assert_eq!(marker_pos(700_000, 600_000), None);

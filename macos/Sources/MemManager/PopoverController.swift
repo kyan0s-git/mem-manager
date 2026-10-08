@@ -19,6 +19,7 @@ final class DashboardViewController: NSViewController {
     private var mainStack: NSStackView!
     private var activityPage: ActivityPageView?
     private var lastSnap = Snapshot()
+    private var lastHelper = false
     let updateButton = NSButton(title: "", target: nil, action: nil)
     let explainerButton = NSButton(title: "", target: nil, action: nil)
     let appsCaption = label("Apps using the most memory", size: 11, weight: .semibold, color: .secondaryLabelColor)
@@ -139,7 +140,7 @@ final class DashboardViewController: NSViewController {
             activityPage = page
             mainStack.removeFromSuperview()
             pin(page)
-            page.render(lastSnap)
+            page.render(lastSnap, helperInstalled: lastHelper)
         } else {
             activityPage?.removeFromSuperview()
             activityPage = nil
@@ -174,8 +175,9 @@ final class DashboardViewController: NSViewController {
     func render(_ snap: Snapshot, settings: AppSettings, helperInstalled: Bool) {
         _ = view
         lastSnap = snap
+        lastHelper = helperInstalled
         if let page = activityPage {
-            page.render(snap)
+            page.render(snap, helperInstalled: helperInstalled)
             return
         }
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

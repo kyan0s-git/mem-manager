@@ -90,6 +90,7 @@ struct SettingsView: View {
             Section("Notifications") {
                 Toggle("Memory leak alerts", isOn: $settings.notifyLeaks)
                 Toggle("Swap growth warnings", isOn: $settings.notifySwap)
+                Toggle("Offer to quit idle apps when memory stays tight", isOn: $settings.suggestQuit)
             }
             Section {
                 LabeledContent("Status", value: helperStatus)
