@@ -78,6 +78,10 @@ final class Updater: ObservableObject {
         var r = URLRequest(url: u, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         r.setValue(accept, forHTTPHeaderField: "Accept")
         r.setValue("MemManager/\(Updater.currentVersion) (+https://github.com/kyan0s-git/mem-manager)", forHTTPHeaderField: "User-Agent")
+        // CI only: authenticated API calls avoid shared-runner rate limits. Never sent elsewhere.
+        if u.host == "api.github.com", let t = ProcessInfo.processInfo.environment["MEMMANAGER_GITHUB_TOKEN"], !t.isEmpty {
+            r.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
+        }
         return r
     }
 

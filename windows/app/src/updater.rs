@@ -135,9 +135,16 @@ pub fn http_get(url: &str, accept: &str, limit: usize) -> Result<Vec<u8>, String
         if req.0.is_null() {
             return Err(last_error("request"));
         }
-        let headers: Vec<u16> = format!("Accept: {accept}\r\nX-GitHub-Api-Version: 2022-11-28\r\n")
-            .encode_utf16()
-            .collect();
+        let mut headers = format!("Accept: {accept}\r\nX-GitHub-Api-Version: 2022-11-28\r\n");
+        // CI only: authenticated API calls avoid shared-runner rate limits. Never sent elsewhere.
+        if host == "api.github.com" {
+            if let Ok(t) = std::env::var("MEMMANAGER_GITHUB_TOKEN") {
+                if !t.is_empty() {
+                    headers += &format!("Authorization: Bearer {t}\r\n");
+                }
+            }
+        }
+        let headers: Vec<u16> = headers.encode_utf16().collect();
         let _ = WinHttpAddRequestHeaders(req.0, &headers, ADD_HEADER);
         WinHttpSendRequest(req.0, None, None, 0, 0, 0).map_err(|e| format!("send: {e}"))?;
         WinHttpReceiveResponse(req.0, std::ptr::null_mut())

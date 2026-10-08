@@ -73,6 +73,8 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "selftest exited with $($p.ExitCode)" }
       - name: In-app update against the real releases (download + checksum, no install)
         if: matrix.target == 'x86_64-pc-windows-msvc'
+        env:
+          MEMMANAGER_GITHUB_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
@@ -131,6 +133,8 @@ jobs:
           cat selftest.json
       - name: In-app update against the real releases (download + checksum, no install)
         working-directory: macos
+        env:
+          MEMMANAGER_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
           ./.build/release/MemManager --check-update --pretend-version=0.0.1 --download --out=update.json
