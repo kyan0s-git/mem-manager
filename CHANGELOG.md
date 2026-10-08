@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — virtual memory, no false alarms, and quit offers on macOS
 
 ### Windows
 - **Fixed: "Critical" with plenty of free RAM.**
@@ -23,6 +23,19 @@
   - The Activity page states what MemManager can do on this Mac. macOS manages memory itself;
     Nudge needs the helper, which needs a Developer-ID-signed build.
   - The "Now" line reads "macOS is handling memory".
+
+### Upgrading
+- **From 0.2.0 or 0.3.0:** MemManager offers this update by itself within a day of its release;
+  to get it sooner, use **Settings → Updates → Check now**. It installs in place and keeps your
+  settings.
+- **From 0.1.0:** install this version once by hand.
+
+### Known limitations
+- **Unsigned builds:**
+  - Windows SmartScreen may warn.
+  - On macOS, right-click → Open the first time. Nudge stays unavailable until builds are
+    Developer-ID signed.
+- **Not yet hand-tested:** the dashboards and the Activity view are verified headless in CI only.
 
 ## v0.3.0 — see what MemManager does, and an app icon
 
