@@ -20,6 +20,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Library/LaunchDaemons" "$app/Contents/Resources"
 cp "$bin/MemManager" "$bin/MemManagerHelper" "$app/Contents/MacOS/"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp Resources/dev.memmanager.helper.plist "$app/Contents/Library/LaunchDaemons/"
 
 if [[ -n "${VERSION:-}" ]]; then

@@ -171,3 +171,53 @@ Friendly mode adds:
     for the app to quit, swaps the bundles (restoring the old one if the swap fails) and reopens it.
 - **Footprint:** the check and install run on short-lived background work; nothing stays resident.
 
+## 7. Seeing what MemManager does
+
+Numbers say *that* something changed. These features show **what MemManager did and why**, so
+you can judge it yourself. They are kept out of the way of the dashboard.
+
+- **"Now:" line.** One sentence on what MemManager is doing at this moment, for example "Watching
+  · nothing to do", "Memory is tight · acting where it helps", or "Game mode · staying out of the
+  way".
+- **"Last:" line**, coloured by the measured result, with an **Activity →** link next to it.
+- **Graph markers.** Every action is a dot on the 10-minute graph's time axis, with a faint
+  vertical line, so its effect on the curve is visible.
+- **App badges (Windows).** Apps MemManager trimmed or quieted in the last 30 minutes say so in
+  the app list.
+- **Activity view.** It opens from the dashboard and lists the last 40 events, newest first. Each
+  event has:
+  - **What**, for example "Trimmed idle apps", "Warned: Teams looks like it's leaking", or a manual
+    per-app action.
+  - **Why:** the reading that triggered it ("Only 820 MB was quickly free and Windows was already
+    recycling its cache"), or "You asked".
+  - **Which apps** were affected, or the error if it failed.
+  - **The measured result**, from the regret ledger: "1.1 GB back · no slowdown" (green), "a
+    little was read back" or "measuring…" (grey), or "caused a slowdown, backing off" (amber).
+  - At the top: a one-line summary ("3 actions · 2.3 GB back · no slowdowns"), the "cache made room
+    for…" line, and the cache-hit count on Windows.
+
+**Space.** The dashboard gained no permanent rows; the status rows were reworded instead. The
+explanatory cache caption shows only alongside the one-time explainer. The detail lines from §5
+moved into Activity.
+
+**Cost.**
+
+- The log is a fixed ring of 40 entries.
+- App rows, graph history and the activity list are built only while the flyout or popover is
+  open, so a closed app allocates nothing for them per tick.
+- The macOS activity page is created when opened and released when closed, and it rebuilds its
+  rows only when the log changes.
+
+## 8. App icon
+
+A blue tile with the white 270° gauge ring, about two-thirds full, around a small centre dot. It
+is the same ring as the tray and menu bar icon, so the app and its status item read as one.
+[`scripts/make_icons.py`](../../scripts/make_icons.py) (stdlib only) renders every size natively
+with signed-distance anti-aliasing, using thicker strokes and no dot at the smallest sizes. It
+writes:
+
+- `windows/app/memmanager.ico`: embedded by `build.rs` as a `.res` with no resource compiler;
+  also used as the installer icon.
+- `macos/Resources/AppIcon.icns`: copied into the bundle by `bundle.sh`.
+- `assets/icon.svg` (vector master) and `assets/icon-256.png`.
+

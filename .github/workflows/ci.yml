@@ -68,6 +68,10 @@ jobs:
         run: |
           $exe = "windows/target/${{ matrix.target }}/release/memmanager.exe"
           "Binary size: $((Get-Item $exe).Length) bytes"
+          Add-Type -Namespace W -Name I -MemberDefinition '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern uint ExtractIconEx(string f, int i, System.IntPtr[] l, System.IntPtr[] s, uint n);'
+          $icons = [W.I]::ExtractIconEx((Resolve-Path $exe).Path, -1, $null, $null, 0)
+          "Embedded icons: $icons"
+          if ($icons -lt 1) { throw "the app icon is not embedded in the exe" }
           $p = Start-Process -FilePath $exe -ArgumentList '--selftest=20','--out=selftest.json' -Wait -PassThru
           Get-Content selftest.json
           if ($p.ExitCode -ne 0) { throw "selftest exited with $($p.ExitCode)" }

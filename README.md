@@ -1,3 +1,5 @@
+<img src="assets/icon-256.png" width="96" alt="MemManager icon" align="right">
+
 # MemManager
 
 Two native memory managers, one per OS, built on the same measured policy engine:
@@ -26,6 +28,12 @@ Two native memory managers, one per OS, built on the same measured policy engine
   names: Comfortable, Busy, Tight, Critical. Every number is a real OS value, and **Settings →
   Values** switches back to Task Manager or Activity Monitor terms
   ([why](docs/understanding-memory.md)).
+- **See what it does:**
+  - **Activity** lists every action and warning in plain words: what was done, why (the reading
+    that triggered it), which apps were affected, and the measured result.
+  - Actions also appear as dots on the dashboard graph, so you can watch their effect on the
+    curve.
+  - A "Now:" line says what MemManager is doing at this moment.
 - **Honest cleaning:** while memory is comfortable, a manual clean first says what it would cost
   and that it won't make anything faster. Idle apps holding real memory are pointed out instead.
 - **In-app updates:**

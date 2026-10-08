@@ -48,6 +48,7 @@ OutputBaseFilename=MemManager-{#AppVersion}-windows-setup
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\app\memmanager.ico
 UninstallDisplayName=MemManager
 UninstallDisplayIcon={app}\memmanager.exe
 CloseApplications=no

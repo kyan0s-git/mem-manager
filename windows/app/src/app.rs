@@ -997,6 +997,8 @@ fn register_class(hinst: HINSTANCE, name: PCWSTR, proc_: WNDPROC, shadow: bool) 
         lpfnWndProc: proc_,
         hInstance: hinst,
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() },
+        // The app icon embedded by build.rs (group id 1), shared with dialogs and Explorer.
+        hIcon: unsafe { LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default() },
         lpszClassName: name,
         ..Default::default()
     };
