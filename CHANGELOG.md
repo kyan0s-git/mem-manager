@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — friendly values and in-app updates
 
 ### Both platforms
 - **Friendly values, on by default.**
@@ -22,6 +22,18 @@
     - macOS: a bundle swap.
   - The app restarts with your settings.
 - Releases also publish raw `MemManager-<ver>-windows-<arch>.exe` assets for portable updates.
+
+### Upgrading from 0.1.0
+- 0.1.0 has no updater, so install this version once by hand: run the new setup, or drag the new
+  app over the old one. Your settings are kept. Later versions update from inside the app.
+
+### Known limitations
+- **Unsigned builds:**
+  - Windows SmartScreen may warn.
+  - On macOS, right-click → Open the first time.
+- **Not yet hand-tested:** the dashboards are verified headless in CI only.
+- **macOS cache-hit counter:** macOS has no system-wide cache-hit counter, so the "data back from
+  cache" line is Windows-only.
 
 ## v0.1.0 — first pre-release
 
